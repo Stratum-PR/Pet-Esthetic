@@ -449,3 +449,46 @@ def upload_to_timesheets(records_df, user_mapping):
         print(f"  ✗ Failed: {failed_count}")
     
     return created_count
+
+
+# Run the script
+    
+print("=" * 60)
+print("Pet Esthetic Timesheet Sync")
+print("=" * 60)
+print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print()
+
+try:
+    # Step 1: Download Test Clocking Action records
+    clocking_df = download_test_clocking_actions()
+    
+    # Step 2: Download existing Timesheets
+    timesheets_df = download_timesheets()
+    
+    # Step 2.5: Get user ID mapping (employee_id -> user_id)
+    user_mapping = get_user_id_mapping()
+    
+    # Step 3: Find missing records
+    missing_df = find_missing_records(clocking_df, timesheets_df)
+    
+    # Step 4: Upload missing records
+    created_count = upload_to_timesheets(missing_df, user_mapping)
+    
+    # Summary
+    print("\n" + "=" * 60)
+    print("Sync Complete!")
+    print("=" * 60)
+    print(f"Test Clocking Action records: {len(clocking_df)}")
+    print(f"Existing Timesheets records: {len(timesheets_df)}")
+    print(f"Missing records found: {len(missing_df)}")
+    print(f"New records created: {created_count}")
+    print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+except Exception as e:
+    print("\n" + "=" * 60)
+    print("ERROR!")
+    print("=" * 60)
+    print(f"Sync failed: {str(e)}")
+    raise
+
