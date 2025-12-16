@@ -43,7 +43,7 @@ jobs:
           PROJECT_ID: ${{ secrets.NOLOCO_PROJECT_ID }}
         
         run: |
-          python Scripts/Noloco_Splash_Page_Timesheet_Updates.py
+          python scripts/Noloco_Splash_Page_Timesheet_Updates.py
 
       
       # Step 5: Upload logs as artifacts (optional - for troubleshooting)
