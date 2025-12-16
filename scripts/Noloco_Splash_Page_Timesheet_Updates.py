@@ -10,10 +10,16 @@ from dotenv import load_dotenv
 # CONFIGURATION - Update these with your credentials
 # ============================================================================
 # Load environment variables
-load_dotenv()
+#load_dotenv()
 API_TOKEN = os.getenv('NOLOCO_API_TOKEN')
 PROJECT_ID = os.getenv('NOLOCO_PROJECT_ID')
 API_URL = f"https://api.portals.noloco.io/data/{PROJECT_ID}"
+
+# Add validation
+if not API_TOKEN:
+    raise Exception("ERROR: NOLOCO_API_TOKEN environment variable not set!")
+if not PROJECT_ID:
+    raise Exception("ERROR: NOLOCO_PROJECT_ID environment variable not set!")
 
 # HTTP headers for API requests
 HEADERS = {
