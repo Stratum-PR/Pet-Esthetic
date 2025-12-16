@@ -1,5 +1,4 @@
-NOLOCO_API_TOKEN 
-NOLOCO_PROJECT_ID
+
 import requests
 import pandas as pd
 from datetime import datetime
