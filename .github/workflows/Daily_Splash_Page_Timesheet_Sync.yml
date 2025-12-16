@@ -32,8 +32,8 @@ jobs:
         env:
           # These will be set as GitHub Secrets
           PYTHONUNBUFFERED: 1
-          API_TOKEN: ${{ secrets.NOLOCO_API_TOKEN }}
-          PROJECT_ID: ${{ secrets.NOLOCO_PROJECT_ID }}
+          NOLOCO_API_TOKEN: ${{ secrets.NOLOCO_API_TOKEN }}
+          NOLOCO_PROJECT_ID: ${{ secrets.NOLOCO_PROJECT_ID }}
         
         run: |
           python scripts/Noloco_Splash_Page_Timesheet_Updates.py
