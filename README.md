@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://rest.techbehemoths.com/storage/images/users/main/company-avatar-6913307ce5829-x2.png" alt="Stratum PR" width="200" style="margin-right: 20px"/>
+  <img src="https://rest.techbehemoths.com/storage/images/users/main/company-avatar-6913307ce5829-x2.png" alt="Stratum PR" width="200" style="margin: 20px"/>
     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRD_nbaHVVaKtOPRBACWcIyulQUeigNTlgiwQ&sE" alt="Pet Esthetic" width="200" style="margin: 20px"/>
 </div>
