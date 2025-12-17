@@ -7,8 +7,9 @@ name: Daily_Splash_Page_Timesheet_Sync
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 15 * * *'  # 3:00 PM UTC = 11:00 AM Puerto Rico time
-    - cron: '0 3 * * *'   # 3:00 AM UTC = 11:00 PM Puerto Rico time (previous day)
+    # Monday to Saturday, 9 AM to 5 PM Puerto Rico time (every hour)
+    # Puerto Rico is UTC-4, so 9 AM-5 PM PR = 1 PM-9 PM UTC (13:00-21:00)
+    - cron: '0 13-21 * * 1-6'
 jobs:
   build:
     runs-on: ubuntu-latest  
