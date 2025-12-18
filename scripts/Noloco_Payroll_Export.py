@@ -1,20 +1,20 @@
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List, Tuple, Dict
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from datetime import date
+import base64
+import os
 
 pd.set_option('display.max_columns', None)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-
-APP_SLUG = "pet-esthetic"
-API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjYsImVtYWlsIjoiai5yb2RyaWd1ZXpAc3RyYXR1bXByLmNvbSIsInByb2plY3QiOiJwZXQtZXN0aGV0aWMiLCJ0eXBlIjoiQVBJIiwiaWF0IjoxNzU1ODI2MzM1fQ.LC8q7dh9UszDqqxqgkGi1h11lHbWOSRRKHkDren3zkw"
+API_KEY = os.getenv('NOLOCO_API_TOKEN')
+APP_SLUG = os.getenv('NOLOCO_PROJECT_ID')
 
 # ============================================================================
 # DATA FETCHING FUNCTIONS  
@@ -420,180 +420,6 @@ def create_pay_calculations_sheet(wb, df, styles, company_name, period_text, hou
     cell.border = Border(top=Side(style='double'), bottom=Side(style='double'))
 
 
-def create_summary_metrics_sheet(wb, df, styles, company_name, period_text):
-    """Sheet 4: Summary metrics"""
-    ws = wb.create_sheet("Summary Metrics")
-    current_row = 1
-    
-    ws[f'A{current_row}'] = f"{company_name} - SUMMARY METRICS" if company_name else "SUMMARY METRICS"
-    ws[f'A{current_row}'].font = styles['title_font']
-    current_row += 1
-    
-    ws[f'A{current_row}'] = f"Pay Period: {period_text}"
-    ws[f'A{current_row}'].font = Font(bold=True, size=11)
-    current_row += 3
-    
-    employee_col = 'employeeIdVal' if 'employeeIdVal' in df.columns else 'id'
-    total_employees = df[employee_col].nunique()
-    total_hours = df['shiftHoursWorked'].sum() if 'shiftHoursWorked' in df.columns else 0
-    total_entries = len(df)
-    approved_count = (df['approved'] == True).sum() if 'approved' in df.columns else 0
-    pending_count = total_entries - approved_count
-    avg_hours_per_employee = total_hours / total_employees if total_employees > 0 else 0
-    
-    ws[f'A{current_row}'] = "OVERVIEW"
-    ws[f'A{current_row}'].font = styles['section_font']
-    current_row += 1
-    
-    metrics = [
-        ['Total Employees:', total_employees],
-        ['Total Timesheet Entries:', total_entries],
-        ['Total Hours Worked:', f'{total_hours:.2f}'],
-        ['Average Hours per Employee:', f'{avg_hours_per_employee:.2f}'],
-        ['', ''],
-        ['Approved Entries:', approved_count],
-        ['Pending Approval:', pending_count],
-        ['Approval Rate:', f'{(approved_count/total_entries*100):.1f}%' if total_entries > 0 else 'N/A']
-    ]
-    
-    for metric in metrics:
-        ws[f'A{current_row}'] = metric[0]
-        ws[f'A{current_row}'].font = Font(bold=True)
-        ws[f'B{current_row}'] = metric[1]
-        ws[f'B{current_row}'].font = Font(size=11)
-        current_row += 1
-    
-    current_row += 2
-    ws[f'A{current_row}'] = "BY EMPLOYEE"
-    ws[f'A{current_row}'].font = styles['section_font']
-    current_row += 1
-    
-    headers = ['Employee ID', 'Employee Name', 'Total Hours', '', 'Entries', 'Approved', 'Pending', 'Avg Hours/Entry']
-    for col_num, header in enumerate(headers, 1):
-        cell = ws.cell(row=current_row, column=col_num)
-        cell.value = header
-        if header:
-            cell.font = styles['header_font']
-            cell.fill = styles['header_fill']
-            cell.alignment = Alignment(horizontal='center', wrap_text=True)
-            cell.border = styles['border']
-    
-    current_row += 1
-    name_col = 'users_fullName' if 'users_fullName' in df.columns else 'Unknown'
-    
-    for employee_id in df[employee_col].unique():
-        employee_df = df[df[employee_col] == employee_id]
-        employee_name = employee_df[name_col].iloc[0] if name_col in df.columns else 'Unknown'
-        hours = employee_df['shiftHoursWorked'].sum() if 'shiftHoursWorked' in df.columns else 0
-        entries = len(employee_df)
-        approved = (employee_df['approved'] == True).sum() if 'approved' in df.columns else 0
-        pending = entries - approved
-        avg_hours = hours / entries if entries > 0 else 0
-        
-        ws.cell(row=current_row, column=1).value = employee_id
-        ws.cell(row=current_row, column=1).border = styles['border']
-        
-        ws.cell(row=current_row, column=2).value = employee_name
-        ws.cell(row=current_row, column=2).border = styles['border']
-        
-        cell = ws.cell(row=current_row, column=3)
-        cell.value = hours
-        cell.number_format = '0.00' if hours > 0 else '0'
-        cell.border = styles['border']
-        
-        ws.cell(row=current_row, column=5).value = entries
-        ws.cell(row=current_row, column=5).border = styles['border']
-        
-        ws.cell(row=current_row, column=6).value = approved
-        ws.cell(row=current_row, column=6).border = styles['border']
-        
-        ws.cell(row=current_row, column=7).value = pending
-        ws.cell(row=current_row, column=7).border = styles['border']
-        
-        cell = ws.cell(row=current_row, column=8)
-        cell.value = avg_hours
-        cell.number_format = '0' if avg_hours == 0 else '0.000000000000000'
-        cell.border = styles['border']
-        
-        current_row += 1
-
-
-def create_by_period_sheet(wb, df, styles, company_name):
-    """Sheet 5: By pay period"""
-    ws = wb.create_sheet("By Pay Period")
-    current_row = 1
-    
-    ws[f'A{current_row}'] = f"{company_name} - BY PAY PERIOD" if company_name else "BY PAY PERIOD"
-    ws[f'A{current_row}'].font = styles['title_font']
-    current_row += 3
-    
-    if 'periodStartDate' not in df.columns or 'periodEndDate' not in df.columns:
-        ws[f'A{current_row}'] = "No pay period data available"
-        return
-    
-    df['period_key'] = df['periodStartDate'].astype(str) + ' to ' + df['periodEndDate'].astype(str)
-    employee_col = 'employeeIdVal' if 'employeeIdVal' in df.columns else 'id'
-    name_col = 'users_fullName' if 'users_fullName' in df.columns else 'Unknown'
-    
-    for period in df['period_key'].unique():
-        period_df = df[df['period_key'] == period]
-        
-        ws[f'A{current_row}'] = f"Pay Period: {period}"
-        ws[f'A{current_row}'].font = Font(bold=True, size=11)
-        current_row += 1
-        
-        total_hours = period_df['shiftHoursWorked'].sum() if 'shiftHoursWorked' in df.columns else 0
-        total_employees = period_df[employee_col].nunique()
-        ws[f'A{current_row}'] = f"Employees: {total_employees}  |  Total Hours: {total_hours:.2f}"
-        current_row += 1
-        
-        headers = ['Employee ID', 'Employee Name', 'Total Hours', '', 'Entries', 'Status']
-        for col_num, header in enumerate(headers, 1):
-            cell = ws.cell(row=current_row, column=col_num)
-            cell.value = header
-            if header:
-                cell.font = styles['header_font']
-                cell.fill = styles['header_fill']
-                cell.alignment = Alignment(horizontal='center')
-                cell.border = styles['border']
-        
-        current_row += 1
-        
-        for employee_id in period_df[employee_col].unique():
-            employee_df = period_df[period_df[employee_col] == employee_id]
-            employee_name = employee_df[name_col].iloc[0] if name_col in df.columns else 'Unknown'
-            hours = employee_df['shiftHoursWorked'].sum() if 'shiftHoursWorked' in df.columns else 0
-            entries = len(employee_df)
-            approved_count = (employee_df['approved'] == True).sum() if 'approved' in df.columns else 0
-            status = f"{approved_count}/{entries} Approved"
-            
-            col = 1
-            ws.cell(row=current_row, column=col).value = employee_id
-            ws.cell(row=current_row, column=col).border = styles['border']
-            col += 1
-            
-            ws.cell(row=current_row, column=col).value = employee_name
-            ws.cell(row=current_row, column=col).border = styles['border']
-            col += 1
-            
-            cell = ws.cell(row=current_row, column=col)
-            cell.value = hours
-            cell.number_format = '0.00' if hours > 0 else '0'
-            cell.border = styles['border']
-            col += 2
-            
-            ws.cell(row=current_row, column=col).value = entries
-            ws.cell(row=current_row, column=col).border = styles['border']
-            col += 1
-            
-            ws.cell(row=current_row, column=col).value = status
-            ws.cell(row=current_row, column=col).border = styles['border']
-            
-            current_row += 1
-        
-        current_row += 2
-
-
 # ============================================================================
 # MAIN REPORT FUNCTION
 # ============================================================================
@@ -605,7 +431,7 @@ def create_comprehensive_payroll_report(
     pay_period_label: str = None,
     hourly_rate: float = None
 ):
-    """Create comprehensive payroll report with all 5 sheets."""
+    """Create comprehensive payroll report with all 3 sheets."""
     df = df.copy()
     
     # Parse datetime columns and convert from UTC to Puerto Rico time (AST, UTC-4)
@@ -658,31 +484,159 @@ def create_comprehensive_payroll_report(
     print(f"  - {len(df)} total entries")
     print(f"  - {df['employeeIdVal'].nunique() if 'employeeIdVal' in df.columns else 'N/A'} employees")
     print(f"  - 3 sheets: Time Entries, Employee Summary, Payroll")
+    
+    return output_filename
+
+
+def upload_file_to_noloco(app_name: str, api_key: str, file_path: str, pay_period_text: str = None) -> str:
+    """
+    Upload a file to Noloco Documents table using multipart/form-data
+    
+    Args:
+        app_name: Noloco app slug (e.g., 'pet-esthetic')
+        api_key: API authentication key
+        file_path: Local path to the file to upload
+        pay_period_text: Pay period text for notes (e.g., "December 07 - December 18, 2025")
+        
+    Returns:
+        Document ID if successful
+    """
+    import json
+    
+    # Get filename
+    filename = os.path.basename(file_path)
+    
+    # Create document name in format: yyyy-mm-dd_Payroll_Report
+    document_name = f"{date.today().strftime('%Y-%m-%d')}_Payroll_Report"
+    
+    # Determine MIME type
+    if filename.endswith('.xlsx'):
+        mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    elif filename.endswith('.xls'):
+        mime_type = 'application/vnd.ms-excel'
+    elif filename.endswith('.pdf'):
+        mime_type = 'application/pdf'
+    else:
+        mime_type = 'application/octet-stream'
+    
+    # Create notes with pay period information
+    notes = f"Pay Period: {pay_period_text}" if pay_period_text else "Payroll Report"
+    
+    # Escape special characters for JSON
+    notes_escaped = notes.replace('\\', '\\\\').replace('"', '\\"')
+    document_name_escaped = document_name.replace('\\', '\\\\').replace('"', '\\"')
+    
+    base_url = f"https://api.portals.noloco.io/data/{app_name}"
+    
+    # GraphQL multipart request specification
+    # https://github.com/jaydenseric/graphql-multipart-request-spec
+    
+    # The GraphQL operation
+    operations = {
+        "query": """
+            mutation($documentName: String, $documentType: String, $notes: String, $document: [Upload!]) {
+                createDocuments(
+                    documentName: $documentName,
+                    documentType: $documentType,
+                    notes: $notes,
+                    document: $document
+                ) {
+                    id
+                    documentName
+                    documentType
+                }
+            }
+        """,
+        "variables": {
+            "documentName": document_name,
+            "documentType": "Biweekly Payroll",
+            "notes": notes,
+            "document": [None]  # Will be mapped to file
+        }
+    }
+    
+    # Map showing which variable paths map to which files
+    map_data = {
+        "0": ["variables.document.0"]
+    }
+    
+    # Prepare multipart form data
+    files = {
+        'operations': (None, json.dumps(operations), 'application/json'),
+        'map': (None, json.dumps(map_data), 'application/json'),
+        '0': (filename, open(file_path, 'rb'), mime_type)
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    # Note: Don't set Content-Type header - requests will set it with boundary
+    response = requests.post(base_url, headers=headers, files=files)
+    
+    # Close the file
+    files['0'][1].close()
+    
+    response.raise_for_status()
+    result = response.json()
+    
+    if 'errors' in result:
+        raise Exception(f"GraphQL Error: {result['errors']}")
+    
+    document_id = result['data']['createDocuments']['id']
+    print(f"✓ File uploaded to Noloco Documents table")
+    print(f"  - Document ID: {document_id}")
+    print(f"  - Document Name: {document_name}")
+    print(f"  - Document Type: Biweekly Payroll")
+    print(f"  - Notes: {notes}")
+    
+    return document_id
 
 
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
-
-print("=" * 60)
-print("NOLOCO PAYROLL EXPORT - 3 ESSENTIAL SHEETS")
-print("=" * 60)
-
-print("\n[1/2] Downloading timesheet data from Noloco...")
-df = download_all_fields(APP_SLUG, API_KEY, "Timesheets")
-
-print(f"\n✓ Dataset shape: {df.shape}")
-print(f"✓ Total entries: {len(df)}")
-
-print("\n[2/2] Generating comprehensive payroll report with all sheets...")
-create_comprehensive_payroll_report(
-    df=df,
-    output_filename= date.today().strftime('%Y-%m-%d') + "_Pet_Esthetic_Payroll_Report.xlsx",
-    company_name="Pet Esthetic"
-    # pay_period_label removed - will auto-detect from data
-)
-
-print("\n" + "=" * 60)
-print("✅ ALL DONE! Report has 3 essential sheets")
-print("=" * 60)
-
+if __name__ == "__main__":
+    print("=" * 60)
+    print("NOLOCO PAYROLL EXPORT - 3 ESSENTIAL SHEETS")
+    print("=" * 60)
+    
+    print("\n[1/3] Downloading timesheet data from Noloco...")
+    df = download_all_fields(APP_SLUG, API_KEY, "Timesheets")
+    print(f"\n✓ Dataset shape: {df.shape}")
+    print(f"✓ Total entries: {len(df)}")
+    
+    print("\n[2/3] Generating comprehensive payroll report with all sheets...")
+    output_filename = date.today().strftime('%Y-%m-%d') + " Pet Esthetic Payroll Report.xlsx"
+    create_comprehensive_payroll_report(
+        df=df,
+        output_filename=output_filename,
+        company_name="Pet Esthetic"
+    )
+    
+    print("\n[3/3] Uploading report to Noloco Documents...")
+    try:
+        # Extract pay period from data for notes
+        if 'periodStartDate' in df.columns and 'periodEndDate' in df.columns:
+            # Dates are already timezone-aware datetime objects
+            start_date = pd.to_datetime(df['periodStartDate'].min()).strftime('%Y-%m-%d')
+            end_date = pd.to_datetime(df['periodEndDate'].max()).strftime('%Y-%m-%d')
+            pay_period_text = f"{start_date} - {end_date}"
+        else:
+            pay_period_text = None
+        
+        document_id = upload_file_to_noloco(
+            app_name=APP_SLUG,
+            api_key=API_KEY,
+            file_path=output_filename,
+            pay_period_text=pay_period_text
+        )
+    except Exception as e:
+        print(f"⚠️  Could not upload to Noloco: {str(e)}")
+        print("   File is still available locally")
+    
+    print("\n" + "=" * 60)
+    print("✅ ALL DONE! Report has 3 essential sheets")
+    print("=" * 60)
+    print(f"\nLocal file: {output_filename}")
+    print(f"Noloco Document ID: {document_id if 'document_id' in locals() else 'Upload failed'}")
