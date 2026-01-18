@@ -1,4 +1,3 @@
-
 import requests
 import os
 import pandas as pd
@@ -88,9 +87,9 @@ def download_test_clocking_actions():
     Download all records from Test Clocking Action table (Splash Page Clocks)
     
     Returns:
-        DataFrame with columns: id, employee_id, clock_in, clock_out
+        DataFrame with columns: id, employee_id, employee_pin, clock_in, clock_out, related_employee_id
     """
-    print("Step 1: Downloading Test Clocking Action records...")
+    print("Step 1: Downloading Splash Page Clocks records...")
     
     all_records = []
     has_more_pages = True
@@ -109,8 +108,10 @@ def download_test_clocking_actions():
                         node {{
                             id
                             employeeIdVal
+                            employeePin
                             clockIn
                             clockOut
+                            relatedEmployeeId
                         }}
                     }}
                     pageInfo {{
@@ -129,8 +130,10 @@ def download_test_clocking_actions():
                         node {
                             id
                             employeeIdVal
+                            employeePin
                             clockIn
                             clockOut
+                            relatedEmployeeId
                         }
                     }
                     pageInfo {
@@ -153,8 +156,10 @@ def download_test_clocking_actions():
             all_records.append({
                 "id": node.get("id"),
                 "employee_id": node.get("employeeIdVal"),
+                "employee_pin": node.get("employeePin"),
                 "clock_in": node.get("clockIn"),
-                "clock_out": node.get("clockOut")
+                "clock_out": node.get("clockOut"),
+                "related_employee_id": node.get("relatedEmployeeId")
             })
         
         print(f"  Downloaded page {page_number}: {len(edges)} records")
@@ -168,7 +173,7 @@ def download_test_clocking_actions():
     df = pd.DataFrame(all_records)
     
     # Remove records with missing required fields
-    df = df.dropna(subset=["employee_id", "clock_in", "clock_out"])
+    df = df.dropna(subset=["employee_pin", "clock_in", "clock_out"])
     
     print(f"  ✓ Total valid records: {len(df)}")
     return df
@@ -262,16 +267,16 @@ def download_timesheets():
     return df
 
 
-def get_user_id_mapping():
+def get_employee_pin_mapping():
     """
-    Fetch all users and create a mapping from employeeIdVal to User ID
+    Fetch all employees and create a mapping from employeePin to Employee record ID
     
     Returns:
-        Dictionary mapping employee_id -> user_record_id
+        Dictionary mapping employee_pin -> employee_record_id
     """
-    print("\nStep 2.5: Fetching User records to map employee IDs...")
+    print("\nStep 2.5: Fetching Employee records to map employee PINs...")
     
-    all_users = []
+    all_employees = []
     has_more_pages = True
     cursor = None
     
@@ -279,11 +284,11 @@ def get_user_id_mapping():
         if cursor:
             query = f"""
             query {{
-                userCollection(first: 100, after: "{cursor}") {{
+                employeesCollection(first: 100, after: "{cursor}") {{
                     edges {{
                         node {{
                             id
-                            employeeIdVal
+                            employeePin
                         }}
                     }}
                     pageInfo {{
@@ -296,11 +301,11 @@ def get_user_id_mapping():
         else:
             query = """
             query {
-                userCollection(first: 100) {
+                employeesCollection(first: 100) {
                     edges {
                         node {
                             id
-                            employeeIdVal
+                            employeePin
                         }
                     }
                     pageInfo {
@@ -312,37 +317,37 @@ def get_user_id_mapping():
             """
         
         data = run_graphql_query(query)
-        collection = data.get("userCollection", {})
+        collection = data.get("employeesCollection", {})
         edges = collection.get("edges", [])
         page_info = collection.get("pageInfo", {})
         
         for edge in edges:
             node = edge.get("node", {})
-            if node.get("employeeIdVal"):  # Only add if they have an employee ID
-                all_users.append({
-                    "user_id": node.get("id"),
-                    "employee_id": node.get("employeeIdVal")
+            if node.get("employeePin"):  # Only add if they have an employee PIN
+                all_employees.append({
+                    "employee_record_id": node.get("id"),
+                    "employee_pin": node.get("employeePin")
                 })
         
         has_more_pages = page_info.get("hasNextPage", False)
         cursor = page_info.get("endCursor")
     
     # Create mapping dictionary
-    mapping = {user["employee_id"]: user["user_id"] for user in all_users}
-    print(f"  ✓ Found {len(mapping)} users with employee IDs")
+    mapping = {emp["employee_pin"]: emp["employee_record_id"] for emp in all_employees}
+    print(f"  ✓ Found {len(mapping)} employees with employee PINs")
     
     return mapping
 
 
 def find_missing_records(clocking_df, timesheets_df):
     """
-    Find records in Test Clocking Action that don't exist in Timesheets
+    Find records in Splash Page Clocks that don't exist in Timesheets
     
     We compare based on: employee_id + clock_in + clock_out
     If all three match, the record already exists
     
     Args:
-        clocking_df: DataFrame from Test Clocking Action
+        clocking_df: DataFrame from Splash Page Clocks
         timesheets_df: DataFrame from Timesheets
         
     Returns:
@@ -381,18 +386,18 @@ def find_missing_records(clocking_df, timesheets_df):
     
     if len(missing_records) > 0:
         print("\n  Preview of missing records:")
-        print(missing_records[["employee_id", "clock_in", "clock_out"]].head(5).to_string(index=False))
+        print(missing_records[["employee_id", "employee_pin", "clock_in", "clock_out"]].head(5).to_string(index=False))
     
     return missing_records
 
 
-def upload_to_timesheets(records_df, user_mapping):
+def upload_to_timesheets(records_df, employee_pin_mapping):
     """
     Upload new records to Timesheets table
     
     Args:
         records_df: DataFrame with records to upload
-        user_mapping: Dictionary mapping employee_id to user_id
+        employee_pin_mapping: Dictionary mapping employee_pin to employee_record_id
         
     Returns:
         Number of successfully created records
@@ -416,15 +421,15 @@ def upload_to_timesheets(records_df, user_mapping):
         date_only = clock_in_pr.split('T')[0]  # Gets "2025-12-16"
         timesheet_date = f"{date_only}T00:00:00-04:00"  # Midnight PR time with timezone
         
-        # Get the user ID for this employee
-        user_id = user_mapping.get(row['employee_id'])
+        # Get the employee record ID using the employee PIN
+        employee_record_id = employee_pin_mapping.get(row['employee_pin'])
         
-        if not user_id:
-            print(f"  ⚠️  Skipping record {index + 1}: No user found for employee {row['employee_id']}")
+        if not employee_record_id:
+            print(f"  ⚠️  Skipping record {index + 1}: No employee found for PIN {row['employee_pin']}")
             failed_count += 1
             continue
         
-        # STEP 1: Create the timesheet record with the user link
+        # Create the timesheet record with the employee link
         create_mutation = f"""
         mutation {{
             createTimesheets(
@@ -432,7 +437,7 @@ def upload_to_timesheets(records_df, user_mapping):
                 clockDatetime: "{clock_in_pr}",
                 clockOutDatetime: "{clock_out_pr}",
                 timesheetDate: "{timesheet_date}",
-                usersId: "{user_id}"
+                employeesId: "{employee_record_id}"
             ) {{
                 id
             }}
@@ -444,7 +449,7 @@ def upload_to_timesheets(records_df, user_mapping):
             result = run_graphql_query(create_mutation)
             timesheet_id = result.get("createTimesheets", {}).get("id")
             created_count += 1
-            print(f"  ✓ Created record {created_count}/{len(records_df)}: Employee {row['employee_id']} on {date_only} (linked to user)")
+            print(f"  ✓ Created record {created_count}/{len(records_df)}: Employee {row['employee_id']} (PIN: {row['employee_pin']}) on {date_only}")
             
         except Exception as e:
             failed_count += 1
@@ -466,26 +471,26 @@ print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print()
 
 try:
-    # Step 1: Download Test Clocking Action records
+    # Step 1: Download Splash Page Clocks records
     clocking_df = download_test_clocking_actions()
     
     # Step 2: Download existing Timesheets
     timesheets_df = download_timesheets()
     
-    # Step 2.5: Get user ID mapping (employee_id -> user_id)
-    user_mapping = get_user_id_mapping()
+    # Step 2.5: Get employee PIN mapping (employee_pin -> employee_record_id)
+    employee_pin_mapping = get_employee_pin_mapping()
     
     # Step 3: Find missing records
     missing_df = find_missing_records(clocking_df, timesheets_df)
     
     # Step 4: Upload missing records
-    created_count = upload_to_timesheets(missing_df, user_mapping)
+    created_count = upload_to_timesheets(missing_df, employee_pin_mapping)
     
     # Summary
     print("\n" + "=" * 60)
     print("Sync Complete!")
     print("=" * 60)
-    print(f"Test Clocking Action records: {len(clocking_df)}")
+    print(f"Splash Page Clocks records: {len(clocking_df)}")
     print(f"Existing Timesheets records: {len(timesheets_df)}")
     print(f"Missing records found: {len(missing_df)}")
     print(f"New records created: {created_count}")
@@ -497,4 +502,3 @@ except Exception as e:
     print("=" * 60)
     print(f"Sync failed: {str(e)}")
     raise
-
