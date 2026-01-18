@@ -264,16 +264,16 @@ def download_timesheets():
     return df
 
 
-def get_user_pin_mapping():
+def get_employee_pin_mapping():
     """
-    Fetch all users and create a mapping from employeePin to User record ID
+    Fetch all employees and create a mapping from employeePin to Employee record ID
     
     Returns:
-        Dictionary mapping employee_pin -> user_record_id
+        Dictionary mapping employee_pin -> employee_record_id
     """
-    print("\nStep 2.5: Fetching User records to map employee PINs...")
+    print("\nStep 2.5: Fetching Employee records to map employee PINs...")
     
-    all_users = []
+    all_employees = []
     has_more_pages = True
     cursor = None
     
@@ -281,7 +281,7 @@ def get_user_pin_mapping():
         if cursor:
             query = f"""
             query {{
-                userCollection(first: 100, after: "{cursor}") {{
+                employeesCollection(first: 100, after: "{cursor}") {{
                     edges {{
                         node {{
                             id
@@ -298,7 +298,7 @@ def get_user_pin_mapping():
         else:
             query = """
             query {
-                userCollection(first: 100) {
+                employeesCollection(first: 100) {
                     edges {
                         node {
                             id
@@ -314,15 +314,15 @@ def get_user_pin_mapping():
             """
         
         data = run_graphql_query(query)
-        collection = data.get("userCollection", {})
+        collection = data.get("employeesCollection", {})
         edges = collection.get("edges", [])
         page_info = collection.get("pageInfo", {})
         
         for edge in edges:
             node = edge.get("node", {})
             if node.get("employeePin"):  # Only add if they have an employee PIN
-                all_users.append({
-                    "user_record_id": node.get("id"),
+                all_employees.append({
+                    "employee_record_id": node.get("id"),
                     "employee_pin": node.get("employeePin")
                 })
         
@@ -330,8 +330,8 @@ def get_user_pin_mapping():
         cursor = page_info.get("endCursor")
     
     # Create mapping dictionary
-    mapping = {user["employee_pin"]: user["user_record_id"] for user in all_users}
-    print(f"  ✓ Found {len(mapping)} users with employee PINs")
+    mapping = {emp["employee_pin"]: emp["employee_record_id"] for emp in all_employees}
+    print(f"  ✓ Found {len(mapping)} employees with employee PINs")
     
     return mapping
 
