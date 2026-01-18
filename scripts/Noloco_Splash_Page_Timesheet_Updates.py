@@ -87,7 +87,7 @@ def download_test_clocking_actions():
     Download all records from Test Clocking Action table (Splash Page Clocks)
     
     Returns:
-        DataFrame with columns: id, employee_id, employee_pin, clock_in, clock_out, related_employee_id
+        DataFrame with columns: id, employee_id, employee_pin, clock_in, clock_out
     """
     print("Step 1: Downloading Splash Page Clocks records...")
     
@@ -111,7 +111,6 @@ def download_test_clocking_actions():
                             employeePin
                             clockIn
                             clockOut
-                            relatedEmployeeId
                         }}
                     }}
                     pageInfo {{
@@ -133,7 +132,6 @@ def download_test_clocking_actions():
                             employeePin
                             clockIn
                             clockOut
-                            relatedEmployeeId
                         }
                     }
                     pageInfo {
@@ -158,8 +156,7 @@ def download_test_clocking_actions():
                 "employee_id": node.get("employeeIdVal"),
                 "employee_pin": node.get("employeePin"),
                 "clock_in": node.get("clockIn"),
-                "clock_out": node.get("clockOut"),
-                "related_employee_id": node.get("relatedEmployeeId")
+                "clock_out": node.get("clockOut")
             })
         
         print(f"  Downloaded page {page_number}: {len(edges)} records")
