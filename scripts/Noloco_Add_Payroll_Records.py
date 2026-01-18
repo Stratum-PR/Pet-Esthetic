@@ -123,6 +123,45 @@ class NolocoPayrollAutomation:
         """Initialize with global configuration."""
         pass
     
+    def get_employee_pay_rate(self, employee_id: str) -> float:
+        """
+        Get the pay rate for an employee from the Employees table.
+        
+        Args:
+            employee_id: Employee ID value
+            
+        Returns:
+            Pay rate as float, or 0.0 if not found
+        """
+        try:
+            query = f"""
+            query {{
+                employeesCollection(filter: {{employeeId: "{employee_id}"}}) {{
+                    edges {{
+                        node {{
+                            id
+                            payRate
+                        }}
+                    }}
+                }}
+            }}
+            """
+            
+            data = run_graphql_query(query)
+            collection = data.get("employeesCollection", {})
+            edges = collection.get("edges", [])
+            
+            if edges and len(edges) > 0:
+                pay_rate = edges[0].get("node", {}).get("payRate", 0.0)
+                return float(pay_rate) if pay_rate else 0.0
+            
+            print(f"  ⚠️  Warning: No pay rate found for employee {employee_id}")
+            return 0.0
+            
+        except Exception as e:
+            print(f"  ⚠️  Warning: Could not fetch pay rate for employee {employee_id}: {e}")
+            return 0.0
+    
     def get_all_timesheets(self) -> List[Dict]:
         """
         Download all timesheets from Noloco using GraphQL pagination.
@@ -146,16 +185,11 @@ class NolocoPayrollAutomation:
                             edges {{
                                 node {{
                                     id
-                                    employeeIdVal
+                                    employeeId
                                     approved
                                     payrollProcessed
-                                    totalHours
-                                    regularHours
-                                    overtimeHours
-                                    grossPay
-                                    timesheetDate
-                                    clockDatetime
-                                    clockOutDatetime
+                                    periodStartDate
+                                    periodEndDate
                                 }}
                             }}
                             pageInfo {{
@@ -172,16 +206,11 @@ class NolocoPayrollAutomation:
                             edges {
                                 node {
                                     id
-                                    employeeIdVal
+                                    employeeId
                                     approved
                                     payrollProcessed
-                                    totalHours
-                                    regularHours
-                                    overtimeHours
-                                    grossPay
-                                    timesheetDate
-                                    clockDatetime
-                                    clockOutDatetime
+                                    periodStartDate
+                                    periodEndDate
                                 }
                             }
                             pageInfo {
@@ -201,16 +230,11 @@ class NolocoPayrollAutomation:
                     node = edge.get("node", {})
                     all_records.append({
                         "id": node.get("id"),
-                        "employee_id": node.get("employeeIdVal"),
+                        "employee_id": node.get("employeeId"),
                         "approved": node.get("approved"),
                         "payroll_processed": node.get("payrollProcessed"),
-                        "total_hours": node.get("totalHours"),
-                        "regular_hours": node.get("regularHours"),
-                        "overtime_hours": node.get("overtimeHours"),
-                        "gross_pay": node.get("grossPay"),
-                        "timesheet_date": node.get("timesheetDate"),
-                        "clock_in": node.get("clockDatetime"),
-                        "clock_out": node.get("clockOutDatetime")
+                        "period_start_date": node.get("periodStartDate"),
+                        "period_end_date": node.get("periodEndDate")
                     })
                 
                 print(f"  Downloaded page {page_number}: {len(edges)} records")
@@ -266,13 +290,9 @@ class NolocoPayrollAutomation:
                             edges {{
                                 node {{
                                     id
-                                    employeeIdVal
+                                    employeeId
                                     payPeriodStart
                                     payPeriodEnd
-                                    totalHours
-                                    regularHours
-                                    overtimeHours
-                                    grossPay
                                     status
                                 }}
                             }}
@@ -290,13 +310,9 @@ class NolocoPayrollAutomation:
                             edges {
                                 node {
                                     id
-                                    employeeIdVal
+                                    employeeId
                                     payPeriodStart
                                     payPeriodEnd
-                                    totalHours
-                                    regularHours
-                                    overtimeHours
-                                    grossPay
                                     status
                                 }
                             }
@@ -317,13 +333,9 @@ class NolocoPayrollAutomation:
                     node = edge.get("node", {})
                     all_records.append({
                         "id": node.get("id"),
-                        "employee_id": node.get("employeeIdVal"),
+                        "employee_id": node.get("employeeId"),
                         "pay_period_start": node.get("payPeriodStart"),
                         "pay_period_end": node.get("payPeriodEnd"),
-                        "total_hours": node.get("totalHours"),
-                        "regular_hours": node.get("regularHours"),
-                        "overtime_hours": node.get("overtimeHours"),
-                        "gross_pay": node.get("grossPay"),
                         "status": node.get("status")
                     })
                 
@@ -339,12 +351,14 @@ class NolocoPayrollAutomation:
         except Exception as e:
             raise Exception(f"Failed to download payroll records: {str(e)}")
     
-    def get_payroll_records(self, employee_id: Optional[str] = None) -> List[Dict]:
+    def get_payroll_records(self, employee_id: Optional[str] = None, 
+                           pay_period: Optional[Dict[str, str]] = None) -> List[Dict]:
         """
-        Get payroll records, optionally filtered by employee.
+        Get payroll records, optionally filtered by employee and/or pay period.
         
         Args:
             employee_id: Optional employee ID to filter by
+            pay_period: Optional dict with 'start_date' and 'end_date'
             
         Returns:
             List of payroll records
@@ -354,42 +368,19 @@ class NolocoPayrollAutomation:
         if employee_id:
             all_payroll = [p for p in all_payroll if p.get('employee_id') == employee_id]
         
-        return all_payroll
-    
-    def determine_pay_period(self, timesheet_date: str) -> Dict[str, str]:
-        """
-        Determine pay period start and end dates for a given timesheet date.
-        Assumes semi-monthly pay periods (1st-15th and 16th-end of month).
-        
-        Args:
-            timesheet_date: Date string from timesheet (ISO format)
+        if pay_period:
+            filtered_payroll = []
+            for p in all_payroll:
+                p_start = p.get('pay_period_start', '').split('T')[0]
+                p_end = p.get('pay_period_end', '').split('T')[0]
+                
+                if (p_start == pay_period['start_date'] and 
+                    p_end == pay_period['end_date']):
+                    filtered_payroll.append(p)
             
-        Returns:
-            Dict with 'start_date' and 'end_date'
-        """
-        try:
-            if 'T' in timesheet_date:
-                dt = datetime.fromisoformat(timesheet_date.replace('Z', '+00:00'))
-            else:
-                dt = datetime.strptime(timesheet_date, '%Y-%m-%d')
-        except Exception as e:
-            print(f"⚠️  Warning: Could not parse date {timesheet_date}: {e}")
-            dt = datetime.now()
+            all_payroll = filtered_payroll
         
-        # Determine pay period (semi-monthly: 1-15 and 16-end)
-        if dt.day <= 15:
-            period_start = dt.replace(day=1)
-            period_end = dt.replace(day=15)
-        else:
-            period_start = dt.replace(day=16)
-            # Get last day of month
-            next_month = dt.replace(day=28) + timedelta(days=4)
-            period_end = next_month - timedelta(days=next_month.day)
-        
-        return {
-            'start_date': period_start.strftime('%Y-%m-%d'),
-            'end_date': period_end.strftime('%Y-%m-%d')
-        }
+        return all_payroll
     
     def find_existing_payroll(self, employee_id: str, pay_period: Dict[str, str]) -> Optional[Dict]:
         """
@@ -402,46 +393,12 @@ class NolocoPayrollAutomation:
         Returns:
             Existing payroll record or None
         """
-        payroll_records = self.get_payroll_records(employee_id)
+        payroll_records = self.get_payroll_records(employee_id, pay_period)
         
-        for record in payroll_records:
-            record_start = record.get('pay_period_start', '').split('T')[0]
-            record_end = record.get('pay_period_end', '').split('T')[0]
-            
-            if (record_start == pay_period['start_date'] and
-                record_end == pay_period['end_date']):
-                return record
+        if payroll_records and len(payroll_records) > 0:
+            return payroll_records[0]
         
         return None
-    
-    def calculate_payroll_totals(self, timesheets: List[Dict]) -> Dict:
-        """
-        Calculate total hours and pay from timesheets.
-        
-        Args:
-            timesheets: List of timesheet records
-            
-        Returns:
-            Dict with calculated totals
-        """
-        total_hours = 0.0
-        total_regular_hours = 0.0
-        total_overtime_hours = 0.0
-        total_gross_pay = 0.0
-        
-        for ts in timesheets:
-            total_hours += float(ts.get('total_hours', 0) or 0)
-            total_regular_hours += float(ts.get('regular_hours', 0) or 0)
-            total_overtime_hours += float(ts.get('overtime_hours', 0) or 0)
-            total_gross_pay += float(ts.get('gross_pay', 0) or 0)
-        
-        return {
-            'total_hours': round(total_hours, 2),
-            'regular_hours': round(total_regular_hours, 2),
-            'overtime_hours': round(total_overtime_hours, 2),
-            'gross_pay': round(total_gross_pay, 2),
-            'timesheet_count': len(timesheets)
-        }
     
     def create_payroll_record(self, employee_id: str, timesheets: List[Dict], 
                              pay_period: Dict[str, str]) -> Dict:
@@ -451,30 +408,35 @@ class NolocoPayrollAutomation:
         Args:
             employee_id: Employee ID
             timesheets: List of approved timesheets
-            pay_period: Pay period dates
+            pay_period: Pay period dates from the timesheets
             
         Returns:
             Created payroll record
         """
-        totals = self.calculate_payroll_totals(timesheets)
+        # Get pay rate from employee record
+        pay_rate = self.get_employee_pay_rate(employee_id)
+        
+        # Get timesheet IDs for the relationship
+        timesheet_ids = [ts.get('id') for ts in timesheets]
         
         # Format dates as ISO datetime strings with timezone
         period_start_dt = f"{pay_period['start_date']}T00:00:00-04:00"
         period_end_dt = f"{pay_period['end_date']}T23:59:59-04:00"
-        created_dt = datetime.now().isoformat()
+        
+        # Build the mutation with relationship IDs
+        # Note: relatedTimesheetsId expects an array of IDs
+        timesheet_ids_str = ', '.join([f'"{tid}"' for tid in timesheet_ids])
         
         mutation = f"""
         mutation {{
             createPayroll(
-                employeeIdVal: "{employee_id}",
+                employeeId: "{employee_id}",
                 payPeriodStart: "{period_start_dt}",
                 payPeriodEnd: "{period_end_dt}",
-                totalHours: {totals['total_hours']},
-                regularHours: {totals['regular_hours']},
-                overtimeHours: {totals['overtime_hours']},
-                grossPay: {totals['gross_pay']},
-                status: "pending",
-                timesheetCount: {totals['timesheet_count']}
+                payRate: {pay_rate},
+                paymentMethod: "Direct Deposit",
+                status: "Pending",
+                relatedTimesheetsId: [{timesheet_ids_str}]
             ) {{
                 id
             }}
@@ -486,8 +448,8 @@ class NolocoPayrollAutomation:
         
         print(f"✅ Created payroll record for employee {employee_id}")
         print(f"   Pay Period: {pay_period['start_date']} to {pay_period['end_date']}")
-        print(f"   Total Hours: {totals['total_hours']}, Gross Pay: ${totals['gross_pay']:.2f}")
-        print(f"   Timesheets: {totals['timesheet_count']}")
+        print(f"   Pay Rate: ${pay_rate:.2f}/hr")
+        print(f"   Timesheets: {len(timesheets)}")
         
         # Small delay to avoid rate limiting
         if RATE_LIMIT_DELAY > 0:
@@ -508,23 +470,18 @@ class NolocoPayrollAutomation:
         """
         payroll_id = payroll_record.get('id')
         
-        # Calculate new totals
-        new_totals = self.calculate_payroll_totals(new_timesheets)
+        # Get new timesheet IDs
+        new_timesheet_ids = [ts.get('id') for ts in new_timesheets]
         
-        # Add to existing totals
-        updated_total_hours = round(payroll_record.get('total_hours', 0) + new_totals['total_hours'], 2)
-        updated_regular_hours = round(payroll_record.get('regular_hours', 0) + new_totals['regular_hours'], 2)
-        updated_overtime_hours = round(payroll_record.get('overtime_hours', 0) + new_totals['overtime_hours'], 2)
-        updated_gross_pay = round(payroll_record.get('gross_pay', 0) + new_totals['gross_pay'], 2)
+        # Build array of IDs for the relationship update
+        timesheet_ids_str = ', '.join([f'"{tid}"' for tid in new_timesheet_ids])
         
+        # Note: This will ADD to the existing relationship
         mutation = f"""
         mutation {{
             updatePayroll(
                 id: "{payroll_id}",
-                totalHours: {updated_total_hours},
-                regularHours: {updated_regular_hours},
-                overtimeHours: {updated_overtime_hours},
-                grossPay: {updated_gross_pay}
+                relatedTimesheetsId: [{timesheet_ids_str}]
             ) {{
                 id
             }}
@@ -535,7 +492,6 @@ class NolocoPayrollAutomation:
         
         print(f"✅ Updated payroll record {payroll_id}")
         print(f"   Added {len(new_timesheets)} new timesheet(s)")
-        print(f"   New Total Hours: {updated_total_hours}, Gross Pay: ${updated_gross_pay:.2f}")
         
         # Small delay to avoid rate limiting
         if RATE_LIMIT_DELAY > 0:
@@ -592,21 +548,31 @@ class NolocoPayrollAutomation:
         print(f"📊 Processing {len(approved_timesheets)} approved timesheet(s)\n")
         
         # Group timesheets by employee and pay period
+        # Using the period dates from the timesheet itself
         grouped_timesheets = {}
         
         for ts in approved_timesheets:
             employee_id = ts.get('employee_id')
-            timesheet_date = ts.get('timesheet_date') or ts.get('clock_in')
+            period_start = ts.get('period_start_date')
+            period_end = ts.get('period_end_date')
             
             if not employee_id:
                 print(f"⚠️  Skipping timesheet {ts.get('id')} - missing employee_id")
                 continue
             
-            if not timesheet_date:
-                print(f"⚠️  Skipping timesheet {ts.get('id')} - missing date")
+            if not period_start or not period_end:
+                print(f"⚠️  Skipping timesheet {ts.get('id')} - missing period dates")
                 continue
             
-            pay_period = self.determine_pay_period(timesheet_date)
+            # Extract just the date part (remove time if present)
+            period_start_date = period_start.split('T')[0]
+            period_end_date = period_end.split('T')[0]
+            
+            pay_period = {
+                'start_date': period_start_date,
+                'end_date': period_end_date
+            }
+            
             key = f"{employee_id}_{pay_period['start_date']}_{pay_period['end_date']}"
             
             if key not in grouped_timesheets:
