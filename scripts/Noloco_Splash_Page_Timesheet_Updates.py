@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+import time
 
 # ============================================================================
 # CONFIGURATION - Update these with your credentials
@@ -25,6 +26,11 @@ HEADERS = {
     "Authorization": f"Bearer {API_TOKEN}",
     "Content-Type": "application/json"
 }
+
+# Configuration for retry logic
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds
+RATE_LIMIT_DELAY = 0.5  # seconds between record uploads to avoid rate limiting
 # ============================================================================
 
 
@@ -39,47 +45,109 @@ def convert_utc_to_pr(utc_datetime_string):
     Returns:
         Datetime string in Puerto Rico timezone with offset: "2025-12-16T12:51:00-04:00"
     """
-    # Parse the UTC datetime
-    # Remove the 'Z' at the end and the milliseconds if present
-    clean_string = utc_datetime_string.replace('Z', '').split('.')[0]
-    utc_dt = datetime.fromisoformat(clean_string)
-    
-    # Add UTC timezone info
-    utc_dt = utc_dt.replace(tzinfo=ZoneInfo('UTC'))
-    
-    # Convert to Puerto Rico timezone (America/Puerto_Rico)
-    pr_dt = utc_dt.astimezone(ZoneInfo('America/Puerto_Rico'))
-    
-    # Return in ISO format WITH timezone offset (Noloco needs this)
-    return pr_dt.isoformat()
+    try:
+        # Parse the UTC datetime
+        # Remove the 'Z' at the end and the milliseconds if present
+        clean_string = utc_datetime_string.replace('Z', '').split('.')[0]
+        utc_dt = datetime.fromisoformat(clean_string)
+        
+        # Add UTC timezone info
+        utc_dt = utc_dt.replace(tzinfo=ZoneInfo('UTC'))
+        
+        # Convert to Puerto Rico timezone (America/Puerto_Rico)
+        pr_dt = utc_dt.astimezone(ZoneInfo('America/Puerto_Rico'))
+        
+        # Return in ISO format WITH timezone offset (Noloco needs this)
+        return pr_dt.isoformat()
+    except Exception as e:
+        raise Exception(f"Failed to convert datetime '{utc_datetime_string}': {str(e)}")
 
 
-def run_graphql_query(query):
+def run_graphql_query(query, retry_count=0):
     """
     Send a GraphQL query to Noloco API and return the response
+    Includes retry logic for transient failures
     
     Args:
         query: GraphQL query string
+        retry_count: Current retry attempt (internal use)
         
     Returns:
         Response data as dictionary
     """
-    response = requests.post(
-        API_URL,
-        headers=HEADERS,
-        json={"query": query},
-        timeout=30
-    )
+    try:
+        response = requests.post(
+            API_URL,
+            headers=HEADERS,
+            json={"query": query},
+            timeout=30
+        )
+        
+        # Handle rate limiting with retry
+        if response.status_code == 429:
+            if retry_count < MAX_RETRIES:
+                wait_time = RETRY_DELAY * (retry_count + 1)
+                print(f"  ⚠️  Rate limited, waiting {wait_time}s before retry {retry_count + 1}/{MAX_RETRIES}...")
+                time.sleep(wait_time)
+                return run_graphql_query(query, retry_count + 1)
+            else:
+                raise Exception(f"Rate limit exceeded after {MAX_RETRIES} retries")
+        
+        # Handle server errors with retry
+        if response.status_code >= 500:
+            if retry_count < MAX_RETRIES:
+                wait_time = RETRY_DELAY * (retry_count + 1)
+                print(f"  ⚠️  Server error {response.status_code}, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
+                time.sleep(wait_time)
+                return run_graphql_query(query, retry_count + 1)
+            else:
+                raise Exception(f"Server error {response.status_code} after {MAX_RETRIES} retries: {response.text}")
+        
+        # Handle authentication errors (don't retry)
+        if response.status_code == 401:
+            raise Exception("Authentication failed. Check your NOLOCO_API_TOKEN environment variable.")
+        
+        # Handle other HTTP errors
+        if response.status_code != 200:
+            raise Exception(f"API error: {response.status_code} - {response.text}")
+        
+        result = response.json()
+        
+        # Handle GraphQL errors
+        if "errors" in result:
+            error_messages = []
+            for error in result["errors"]:
+                msg = error.get("message", "Unknown error")
+                # Check for specific error types
+                if "Cannot query field" in msg:
+                    error_messages.append(f"Schema error: {msg} (Table structure may have changed)")
+                elif "Unknown argument" in msg:
+                    error_messages.append(f"Schema error: {msg} (Field name may have changed)")
+                elif "Unique constraint" in msg:
+                    error_messages.append(f"Duplicate record: {msg}")
+                else:
+                    error_messages.append(msg)
+            raise Exception(f"GraphQL error: {'; '.join(error_messages)}")
+        
+        return result["data"]
+        
+    except requests.exceptions.Timeout:
+        if retry_count < MAX_RETRIES:
+            wait_time = RETRY_DELAY * (retry_count + 1)
+            print(f"  ⚠️  Request timeout, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
+            time.sleep(wait_time)
+            return run_graphql_query(query, retry_count + 1)
+        else:
+            raise Exception(f"Request timeout after {MAX_RETRIES} retries")
     
-    if response.status_code != 200:
-        raise Exception(f"API error: {response.status_code} - {response.text}")
-    
-    result = response.json()
-    
-    if "errors" in result:
-        raise Exception(f"GraphQL error: {result['errors']}")
-    
-    return result["data"]
+    except requests.exceptions.ConnectionError as e:
+        if retry_count < MAX_RETRIES:
+            wait_time = RETRY_DELAY * (retry_count + 1)
+            print(f"  ⚠️  Connection error, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
+            time.sleep(wait_time)
+            return run_graphql_query(query, retry_count + 1)
+        else:
+            raise Exception(f"Connection error after {MAX_RETRIES} retries. Check your internet connection.")
 
 
 def download_test_clocking_actions():
@@ -96,84 +164,97 @@ def download_test_clocking_actions():
     cursor = None
     page_number = 1
     
-    # Keep fetching pages until we have all records
-    while has_more_pages:
-        # Build the query
-        if cursor:
-            # If we have a cursor, use it to get the next page
-            query = f"""
-            query {{
-                testClockingActionCollection(first: 100, after: "{cursor}") {{
-                    edges {{
-                        node {{
-                            id
-                            employeeIdVal
-                            employeePin
-                            clockIn
-                            clockOut
+    try:
+        # Keep fetching pages until we have all records
+        while has_more_pages:
+            # Build the query
+            if cursor:
+                query = f"""
+                query {{
+                    testClockingActionCollection(first: 100, after: "{cursor}") {{
+                        edges {{
+                            node {{
+                                id
+                                employeeIdVal
+                                employeePin
+                                clockIn
+                                clockOut
+                            }}
+                        }}
+                        pageInfo {{
+                            hasNextPage
+                            endCursor
                         }}
                     }}
-                    pageInfo {{
-                        hasNextPage
-                        endCursor
-                    }}
                 }}
-            }}
-            """
-        else:
-            # First page - no cursor needed
-            query = """
-            query {
-                testClockingActionCollection(first: 100) {
-                    edges {
-                        node {
-                            id
-                            employeeIdVal
-                            employeePin
-                            clockIn
-                            clockOut
+                """
+            else:
+                query = """
+                query {
+                    testClockingActionCollection(first: 100) {
+                        edges {
+                            node {
+                                id
+                                employeeIdVal
+                                employeePin
+                                clockIn
+                                clockOut
+                            }
+                        }
+                        pageInfo {
+                            hasNextPage
+                            endCursor
                         }
                     }
-                    pageInfo {
-                        hasNextPage
-                        endCursor
-                    }
                 }
-            }
-            """
+                """
+            
+            # Run the query
+            data = run_graphql_query(query)
+            collection = data.get("testClockingActionCollection", {})
+            edges = collection.get("edges", [])
+            page_info = collection.get("pageInfo", {})
+            
+            # Extract records from this page
+            for edge in edges:
+                node = edge.get("node", {})
+                all_records.append({
+                    "id": node.get("id"),
+                    "employee_id": node.get("employeeIdVal"),
+                    "employee_pin": node.get("employeePin"),
+                    "clock_in": node.get("clockIn"),
+                    "clock_out": node.get("clockOut")
+                })
+            
+            print(f"  Downloaded page {page_number}: {len(edges)} records")
+            
+            # Check if there are more pages
+            has_more_pages = page_info.get("hasNextPage", False)
+            cursor = page_info.get("endCursor")
+            page_number += 1
         
-        # Run the query
-        data = run_graphql_query(query)
-        collection = data.get("testClockingActionCollection", {})
-        edges = collection.get("edges", [])
-        page_info = collection.get("pageInfo", {})
+        # Convert to DataFrame
+        df = pd.DataFrame(all_records)
         
-        # Extract records from this page
-        for edge in edges:
-            node = edge.get("node", {})
-            all_records.append({
-                "id": node.get("id"),
-                "employee_id": node.get("employeeIdVal"),
-                "employee_pin": node.get("employeePin"),
-                "clock_in": node.get("clockIn"),
-                "clock_out": node.get("clockOut")
-            })
+        if len(df) == 0:
+            print("  ⚠️  Warning: No records found in Splash Page Clocks table")
+            return df
         
-        print(f"  Downloaded page {page_number}: {len(edges)} records")
+        # Track how many records have missing data
+        initial_count = len(df)
         
-        # Check if there are more pages
-        has_more_pages = page_info.get("hasNextPage", False)
-        cursor = page_info.get("endCursor")
-        page_number += 1
-    
-    # Convert to DataFrame
-    df = pd.DataFrame(all_records)
-    
-    # Remove records with missing required fields
-    df = df.dropna(subset=["employee_pin", "clock_in", "clock_out"])
-    
-    print(f"  ✓ Total valid records: {len(df)}")
-    return df
+        # Remove records with missing required fields
+        df = df.dropna(subset=["employee_pin", "clock_in", "clock_out"])
+        
+        filtered_count = initial_count - len(df)
+        if filtered_count > 0:
+            print(f"  ⚠️  Filtered out {filtered_count} records with missing required fields")
+        
+        print(f"  ✓ Total valid records: {len(df)}")
+        return df
+        
+    except Exception as e:
+        raise Exception(f"Failed to download Splash Page Clocks: {str(e)}")
 
 
 def download_timesheets():
@@ -190,78 +271,80 @@ def download_timesheets():
     cursor = None
     page_number = 1
     
-    # Keep fetching pages until we have all records
-    while has_more_pages:
-        # Build the query
-        if cursor:
-            # If we have a cursor, use it to get the next page
-            query = f"""
-            query {{
-                timesheetsCollection(first: 100, after: "{cursor}") {{
-                    edges {{
-                        node {{
-                            id
-                            employeeIdVal
-                            clockDatetime
-                            clockOutDatetime
+    try:
+        # Keep fetching pages until we have all records
+        while has_more_pages:
+            # Build the query
+            if cursor:
+                query = f"""
+                query {{
+                    timesheetsCollection(first: 100, after: "{cursor}") {{
+                        edges {{
+                            node {{
+                                id
+                                employeeIdVal
+                                clockDatetime
+                                clockOutDatetime
+                            }}
+                        }}
+                        pageInfo {{
+                            hasNextPage
+                            endCursor
                         }}
                     }}
-                    pageInfo {{
-                        hasNextPage
-                        endCursor
-                    }}
                 }}
-            }}
-            """
-        else:
-            # First page - no cursor needed
-            query = """
-            query {
-                timesheetsCollection(first: 100) {
-                    edges {
-                        node {
-                            id
-                            employeeIdVal
-                            clockDatetime
-                            clockOutDatetime
+                """
+            else:
+                query = """
+                query {
+                    timesheetsCollection(first: 100) {
+                        edges {
+                            node {
+                                id
+                                employeeIdVal
+                                clockDatetime
+                                clockOutDatetime
+                            }
+                        }
+                        pageInfo {
+                            hasNextPage
+                            endCursor
                         }
                     }
-                    pageInfo {
-                        hasNextPage
-                        endCursor
-                    }
                 }
-            }
-            """
+                """
+            
+            # Run the query
+            data = run_graphql_query(query)
+            collection = data.get("timesheetsCollection", {})
+            edges = collection.get("edges", [])
+            page_info = collection.get("pageInfo", {})
+            
+            # Extract records from this page
+            for edge in edges:
+                node = edge.get("node", {})
+                all_records.append({
+                    "id": node.get("id"),
+                    "employee_id": node.get("employeeIdVal"),
+                    "clock_in": node.get("clockDatetime"),
+                    "clock_out": node.get("clockOutDatetime")
+                })
+            
+            print(f"  Downloaded page {page_number}: {len(edges)} records")
+            
+            # Check if there are more pages
+            has_more_pages = page_info.get("hasNextPage", False)
+            cursor = page_info.get("endCursor")
+            page_number += 1
         
-        # Run the query
-        data = run_graphql_query(query)
-        collection = data.get("timesheetsCollection", {})
-        edges = collection.get("edges", [])
-        page_info = collection.get("pageInfo", {})
+        # Convert to DataFrame
+        df = pd.DataFrame(all_records)
         
-        # Extract records from this page
-        for edge in edges:
-            node = edge.get("node", {})
-            all_records.append({
-                "id": node.get("id"),
-                "employee_id": node.get("employeeIdVal"),
-                "clock_in": node.get("clockDatetime"),
-                "clock_out": node.get("clockOutDatetime")
-            })
+        print(f"  ✓ Total records: {len(df)}")
+        return df
         
-        print(f"  Downloaded page {page_number}: {len(edges)} records")
-        
-        # Check if there are more pages
-        has_more_pages = page_info.get("hasNextPage", False)
-        cursor = page_info.get("endCursor")
-        page_number += 1
-    
-    # Convert to DataFrame
-    df = pd.DataFrame(all_records)
-    
-    print(f"  ✓ Total records: {len(df)}")
-    return df
+    except Exception as e:
+        raise Exception(f"Failed to download Timesheets: {str(e)}")
 
 
 def get_employee_pin_mapping():
@@ -277,63 +360,71 @@ def get_employee_pin_mapping():
     has_more_pages = True
     cursor = None
     
-    while has_more_pages:
-        if cursor:
-            query = f"""
-            query {{
-                employeesCollection(first: 100, after: "{cursor}") {{
-                    edges {{
-                        node {{
-                            id
-                            employeePin
+    try:
+        while has_more_pages:
+            if cursor:
+                query = f"""
+                query {{
+                    employeesCollection(first: 100, after: "{cursor}") {{
+                        edges {{
+                            node {{
+                                id
+                                employeePin
+                            }}
+                        }}
+                        pageInfo {{
+                            hasNextPage
+                            endCursor
                         }}
                     }}
-                    pageInfo {{
-                        hasNextPage
-                        endCursor
-                    }}
                 }}
-            }}
-            """
-        else:
-            query = """
-            query {
-                employeesCollection(first: 100) {
-                    edges {
-                        node {
-                            id
-                            employeePin
+                """
+            else:
+                query = """
+                query {
+                    employeesCollection(first: 100) {
+                        edges {
+                            node {
+                                id
+                                employeePin
+                            }
+                        }
+                        pageInfo {
+                            hasNextPage
+                            endCursor
                         }
                     }
-                    pageInfo {
-                        hasNextPage
-                        endCursor
-                    }
                 }
-            }
-            """
+                """
+            
+            data = run_graphql_query(query)
+            collection = data.get("employeesCollection", {})
+            edges = collection.get("edges", [])
+            page_info = collection.get("pageInfo", {})
+            
+            for edge in edges:
+                node = edge.get("node", {})
+                if node.get("employeePin"):  # Only add if they have an employee PIN
+                    all_employees.append({
+                        "employee_record_id": node.get("id"),
+                        "employee_pin": node.get("employeePin")
+                    })
+            
+            has_more_pages = page_info.get("hasNextPage", False)
+            cursor = page_info.get("endCursor")
         
-        data = run_graphql_query(query)
-        collection = data.get("employeesCollection", {})
-        edges = collection.get("edges", [])
-        page_info = collection.get("pageInfo", {})
+        # Create mapping dictionary
+        mapping = {emp["employee_pin"]: emp["employee_record_id"] for emp in all_employees}
         
-        for edge in edges:
-            node = edge.get("node", {})
-            if node.get("employeePin"):  # Only add if they have an employee PIN
-                all_employees.append({
-                    "employee_record_id": node.get("id"),
-                    "employee_pin": node.get("employeePin")
-                })
+        if len(mapping) == 0:
+            print("  ⚠️  WARNING: No employees found with PINs! All record uploads will fail.")
+        else:
+            print(f"  ✓ Found {len(mapping)} employees with employee PINs")
         
-        has_more_pages = page_info.get("hasNextPage", False)
-        cursor = page_info.get("endCursor")
-    
-    # Create mapping dictionary
-    mapping = {emp["employee_pin"]: emp["employee_record_id"] for emp in all_employees}
-    print(f"  ✓ Found {len(mapping)} employees with employee PINs")
-    
-    return mapping
+        return mapping
+        
+    except Exception as e:
+        raise Exception(f"Failed to fetch Employee records: {str(e)}")
 
 
 def find_missing_records(clocking_df, timesheets_df):
@@ -356,36 +447,40 @@ def find_missing_records(clocking_df, timesheets_df):
         print("  No records to check")
         return pd.DataFrame()
     
-    # Create a unique key for each record (employee_id + clock_in + clock_out)
-    clocking_df["match_key"] = (
-        clocking_df["employee_id"].astype(str) + "_" +
-        clocking_df["clock_in"].astype(str) + "_" +
-        clocking_df["clock_out"].astype(str)
-    )
-    
-    if len(timesheets_df) > 0:
-        timesheets_df["match_key"] = (
-            timesheets_df["employee_id"].astype(str) + "_" +
-            timesheets_df["clock_in"].astype(str) + "_" +
-            timesheets_df["clock_out"].astype(str)
+    try:
+        # Create a unique key for each record (employee_id + clock_in + clock_out)
+        clocking_df["match_key"] = (
+            clocking_df["employee_id"].astype(str) + "_" +
+            clocking_df["clock_in"].astype(str) + "_" +
+            clocking_df["clock_out"].astype(str)
         )
         
-        # Find records in clocking that are NOT in timesheets
-        missing_records = clocking_df[~clocking_df["match_key"].isin(timesheets_df["match_key"])].copy()
-    else:
-        # If timesheets is empty, all clocking records are missing
-        missing_records = clocking_df.copy()
-    
-    # Remove the match_key column (we don't need it anymore)
-    missing_records = missing_records.drop(columns=["match_key"])
-    
-    print(f"  ✓ Found {len(missing_records)} missing records")
-    
-    if len(missing_records) > 0:
-        print("\n  Preview of missing records:")
-        print(missing_records[["employee_id", "employee_pin", "clock_in", "clock_out"]].head(5).to_string(index=False))
-    
-    return missing_records
+        if len(timesheets_df) > 0:
+            timesheets_df["match_key"] = (
+                timesheets_df["employee_id"].astype(str) + "_" +
+                timesheets_df["clock_in"].astype(str) + "_" +
+                timesheets_df["clock_out"].astype(str)
+            )
+            
+            # Find records in clocking that are NOT in timesheets
+            missing_records = clocking_df[~clocking_df["match_key"].isin(timesheets_df["match_key"])].copy()
+        else:
+            # If timesheets is empty, all clocking records are missing
+            missing_records = clocking_df.copy()
+        
+        # Remove the match_key column (we don't need it anymore)
+        missing_records = missing_records.drop(columns=["match_key"])
+        
+        print(f"  ✓ Found {len(missing_records)} missing records")
+        
+        if len(missing_records) > 0:
+            print("\n  Preview of missing records:")
+            print(missing_records[["employee_id", "employee_pin", "clock_in", "clock_out"]].head(5).to_string(index=False))
+        
+        return missing_records
+        
+    except Exception as e:
+        raise Exception(f"Failed to compare records: {str(e)}")
 
 
 def upload_to_timesheets(records_df, employee_pin_mapping):
@@ -407,55 +502,78 @@ def upload_to_timesheets(records_df, employee_pin_mapping):
     
     created_count = 0
     failed_count = 0
+    failed_reasons = {}  # Track failure reasons for summary
     
     # Upload each record one by one
     for index, row in records_df.iterrows():
-        # Convert UTC times to Puerto Rico timezone
-        clock_in_pr = convert_utc_to_pr(row['clock_in'])
-        clock_out_pr = convert_utc_to_pr(row['clock_out'])
-        
-        # Extract just the date and create a datetime at midnight Puerto Rico time
-        date_only = clock_in_pr.split('T')[0]  # Gets "2025-12-16"
-        timesheet_date = f"{date_only}T00:00:00-04:00"  # Midnight PR time with timezone
-        
-        # Get the employee record ID using the employee PIN
-        employee_record_id = employee_pin_mapping.get(row['employee_pin'])
-        
-        if not employee_record_id:
-            print(f"  ⚠️  Skipping record {index + 1}: No employee found for PIN {row['employee_pin']}")
-            failed_count += 1
-            continue
-        
-        # Create the timesheet record with the employee link using relatedEmployeeId
-        create_mutation = f"""
-        mutation {{
-            createTimesheets(
-                employeeIdVal: "{row['employee_id']}",
-                employeePin: "{row['employee_pin']}",
-                clockDatetime: "{clock_in_pr}",
-                clockOutDatetime: "{clock_out_pr}",
-                timesheetDate: "{timesheet_date}",
-                relatedEmployeeId: "{employee_record_id}"
-            ) {{
-                id
-            }}
-        }}
-        """
-        
         try:
-            # Create the record
+            # Convert UTC times to Puerto Rico timezone
+            clock_in_pr = convert_utc_to_pr(row['clock_in'])
+            clock_out_pr = convert_utc_to_pr(row['clock_out'])
+            
+            # Extract just the date and create a datetime at midnight Puerto Rico time
+            date_only = clock_in_pr.split('T')[0]  # Gets "2025-12-16"
+            timesheet_date = f"{date_only}T00:00:00-04:00"  # Midnight PR time with timezone
+            
+            # Get the employee record ID using the employee PIN
+            employee_record_id = employee_pin_mapping.get(row['employee_pin'])
+            
+            if not employee_record_id:
+                reason = f"No employee found for PIN {row['employee_pin']}"
+                print(f"  ⚠️  Skipping record {index + 1}: {reason}")
+                failed_count += 1
+                failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
+                continue
+            
+            # Create the timesheet record with the employee link using relatedEmployeeId
+            create_mutation = f"""
+            mutation {{
+                createTimesheets(
+                    employeeIdVal: "{row['employee_id']}",
+                    employeePin: "{row['employee_pin']}",
+                    clockDatetime: "{clock_in_pr}",
+                    clockOutDatetime: "{clock_out_pr}",
+                    timesheetDate: "{timesheet_date}",
+                    relatedEmployeeId: "{employee_record_id}"
+                ) {{
+                    id
+                }}
+            }}
+            """
+            
+            # Execute the mutation
             result = run_graphql_query(create_mutation)
             timesheet_id = result.get("createTimesheets", {}).get("id")
             created_count += 1
             print(f"  ✓ Created record {created_count}/{len(records_df)}: Employee {row['employee_id']} (PIN: {row['employee_pin']}) on {date_only}")
             
+            # Small delay to avoid rate limiting
+            if RATE_LIMIT_DELAY > 0 and created_count < len(records_df):
+                time.sleep(RATE_LIMIT_DELAY)
+                
         except Exception as e:
             failed_count += 1
-            print(f"  ✗ Failed record {index + 1}: {str(e)}")
+            error_msg = str(e)
+            # Simplify error message for common cases
+            if "Schema error" in error_msg:
+                reason = "Schema error (table structure changed)"
+            elif "Duplicate record" in error_msg:
+                reason = "Duplicate record"
+            elif "Rate limit" in error_msg:
+                reason = "Rate limit exceeded"
+            else:
+                reason = "API error"
+            
+            print(f"  ✗ Failed record {index + 1}: {error_msg}")
+            failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
     
+    # Summary
     print(f"\n  ✓ Successfully created: {created_count}")
     if failed_count > 0:
         print(f"  ✗ Failed: {failed_count}")
+        print("\n  Failure breakdown:")
+        for reason, count in failed_reasons.items():
+            print(f"    - {reason}: {count}")
     
     return created_count
 
@@ -494,9 +612,19 @@ try:
     print(f"New records created: {created_count}")
     print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
+    # Exit with appropriate code
+    if len(missing_df) > 0 and created_count == 0:
+        print("\n⚠️  WARNING: Records were found but none were created. Check errors above.")
+        exit(1)  # Non-zero exit code for CI/CD pipelines
+    
 except Exception as e:
     print("\n" + "=" * 60)
     print("ERROR!")
     print("=" * 60)
     print(f"Sync failed: {str(e)}")
-    raise
+    print("\nTroubleshooting tips:")
+    print("- Check your NOLOCO_API_TOKEN and NOLOCO_PROJECT_ID environment variables")
+    print("- Verify your internet connection")
+    print("- Check if Noloco API is accessible")
+    print("- Review table structures haven't changed in Noloco")
+    exit(1)  # Non-zero exit code for failure
