@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import json
 from dotenv import load_dotenv
+import time
 
 # ============================================================================
 # CONFIGURATION - Update these with your credentials
@@ -26,6 +27,91 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
+# Configuration for retry logic
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds
+RATE_LIMIT_DELAY = 0.5  # seconds between record uploads
+# ============================================================================
+
+
+def run_graphql_query(query, retry_count=0):
+    """
+    Send a GraphQL query to Noloco API and return the response
+    Includes retry logic for transient failures
+    
+    Args:
+        query: GraphQL query string
+        retry_count: Current retry attempt (internal use)
+        
+    Returns:
+        Response data as dictionary
+    """
+    try:
+        response = requests.post(
+            API_URL,
+            headers=HEADERS,
+            json={"query": query},
+            timeout=30
+        )
+        
+        # Handle rate limiting with retry
+        if response.status_code == 429:
+            if retry_count < MAX_RETRIES:
+                wait_time = RETRY_DELAY * (retry_count + 1)
+                print(f"  ⚠️  Rate limited, waiting {wait_time}s before retry {retry_count + 1}/{MAX_RETRIES}...")
+                time.sleep(wait_time)
+                return run_graphql_query(query, retry_count + 1)
+            else:
+                raise Exception(f"Rate limit exceeded after {MAX_RETRIES} retries")
+        
+        # Handle server errors with retry
+        if response.status_code >= 500:
+            if retry_count < MAX_RETRIES:
+                wait_time = RETRY_DELAY * (retry_count + 1)
+                print(f"  ⚠️  Server error {response.status_code}, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
+                time.sleep(wait_time)
+                return run_graphql_query(query, retry_count + 1)
+            else:
+                raise Exception(f"Server error {response.status_code} after {MAX_RETRIES} retries: {response.text}")
+        
+        # Handle authentication errors (don't retry)
+        if response.status_code == 401:
+            raise Exception("Authentication failed. Check your NOLOCO_API_TOKEN environment variable.")
+        
+        # Handle other HTTP errors
+        if response.status_code != 200:
+            raise Exception(f"API error: {response.status_code} - {response.text}")
+        
+        result = response.json()
+        
+        # Handle GraphQL errors
+        if "errors" in result:
+            error_messages = []
+            for error in result["errors"]:
+                msg = error.get("message", "Unknown error")
+                error_messages.append(msg)
+            raise Exception(f"GraphQL error: {'; '.join(error_messages)}")
+        
+        return result["data"]
+        
+    except requests.exceptions.Timeout:
+        if retry_count < MAX_RETRIES:
+            wait_time = RETRY_DELAY * (retry_count + 1)
+            print(f"  ⚠️  Request timeout, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
+            time.sleep(wait_time)
+            return run_graphql_query(query, retry_count + 1)
+        else:
+            raise Exception(f"Request timeout after {MAX_RETRIES} retries")
+    
+    except requests.exceptions.ConnectionError as e:
+        if retry_count < MAX_RETRIES:
+            wait_time = RETRY_DELAY * (retry_count + 1)
+            print(f"  ⚠️  Connection error, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
+            time.sleep(wait_time)
+            return run_graphql_query(query, retry_count + 1)
+        else:
+            raise Exception(f"Connection error after {MAX_RETRIES} retries. Check your internet connection.")
+
 
 class NolocoPayrollAutomation:
     """
@@ -35,114 +121,120 @@ class NolocoPayrollAutomation:
     
     def __init__(self):
         """Initialize with global configuration."""
-        self.api_url = API_URL
-        self.headers = HEADERS
+        pass
     
-    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None, 
-                     params: Optional[Dict] = None) -> Dict:
+    def get_all_timesheets(self) -> List[Dict]:
         """
-        Make HTTP request to Noloco API with error handling.
+        Download all timesheets from Noloco using GraphQL pagination.
         
-        Args:
-            method: HTTP method (GET, POST, PATCH, DELETE)
-            endpoint: Collection name (e.g., 'timesheets', 'payroll')
-            data: Request payload for POST/PATCH
-            params: Query parameters for filtering
-            
         Returns:
-            Response JSON data
+            List of all timesheet records
         """
-        url = f"{self.api_url}/{endpoint}"
+        print("📋 Fetching all timesheets...")
+        
+        all_records = []
+        has_more_pages = True
+        cursor = None
+        page_number = 1
         
         try:
-            if method == 'GET':
-                response = requests.get(url, headers=self.headers, params=params)
-            elif method == 'POST':
-                response = requests.post(url, headers=self.headers, json=data)
-            elif method == 'PATCH':
-                response = requests.patch(url, headers=self.headers, json=data)
-            elif method == 'DELETE':
-                response = requests.delete(url, headers=self.headers)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-            
-            response.raise_for_status()
-            return response.json()
-        
-        except requests.exceptions.RequestException as e:
-            print(f"❌ API request failed: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                print(f"Response: {e.response.text}")
-            raise
-    
-    def get_all_records(self, collection: str, filters: Optional[Dict] = None) -> List[Dict]:
-        """
-        Retrieve all records from a collection with optional filtering.
-        Handles pagination automatically.
-        
-        Args:
-            collection: Collection name (e.g., 'timesheets', 'payroll', 'employees')
-            filters: Optional filter dictionary
-            
-        Returns:
-            List of all records
-        """
-        all_records = []
-        page = 1
-        page_size = 100
-        
-        while True:
-            params = {
-                'page': page,
-                'limit': page_size
-            }
-            
-            # Add filters if provided
-            if filters:
-                params.update(filters)
-            
-            try:
-                response = self._make_request('GET', collection, params=params)
-                
-                # Handle different response structures
-                if isinstance(response, list):
-                    records = response
-                elif isinstance(response, dict):
-                    records = response.get('data', response.get('records', []))
+            while has_more_pages:
+                if cursor:
+                    query = f"""
+                    query {{
+                        timesheetsCollection(first: 100, after: "{cursor}") {{
+                            edges {{
+                                node {{
+                                    id
+                                    employeeIdVal
+                                    approved
+                                    payrollProcessed
+                                    totalHours
+                                    regularHours
+                                    overtimeHours
+                                    grossPay
+                                    timesheetDate
+                                    clockDatetime
+                                    clockOutDatetime
+                                }}
+                            }}
+                            pageInfo {{
+                                hasNextPage
+                                endCursor
+                            }}
+                        }}
+                    }}
+                    """
                 else:
-                    records = []
+                    query = """
+                    query {
+                        timesheetsCollection(first: 100) {
+                            edges {
+                                node {
+                                    id
+                                    employeeIdVal
+                                    approved
+                                    payrollProcessed
+                                    totalHours
+                                    regularHours
+                                    overtimeHours
+                                    grossPay
+                                    timesheetDate
+                                    clockDatetime
+                                    clockOutDatetime
+                                }
+                            }
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
+                        }
+                    }
+                    """
                 
-                if not records:
-                    break
+                data = run_graphql_query(query)
+                collection = data.get("timesheetsCollection", {})
+                edges = collection.get("edges", [])
+                page_info = collection.get("pageInfo", {})
                 
-                all_records.extend(records)
+                for edge in edges:
+                    node = edge.get("node", {})
+                    all_records.append({
+                        "id": node.get("id"),
+                        "employee_id": node.get("employeeIdVal"),
+                        "approved": node.get("approved"),
+                        "payroll_processed": node.get("payrollProcessed"),
+                        "total_hours": node.get("totalHours"),
+                        "regular_hours": node.get("regularHours"),
+                        "overtime_hours": node.get("overtimeHours"),
+                        "gross_pay": node.get("grossPay"),
+                        "timesheet_date": node.get("timesheetDate"),
+                        "clock_in": node.get("clockDatetime"),
+                        "clock_out": node.get("clockOutDatetime")
+                    })
                 
-                # Check if we've retrieved all records
-                if len(records) < page_size:
-                    break
+                print(f"  Downloaded page {page_number}: {len(edges)} records")
                 
-                page += 1
-                
-            except Exception as e:
-                print(f"Error fetching page {page}: {e}")
-                break
-        
-        return all_records
+                has_more_pages = page_info.get("hasNextPage", False)
+                cursor = page_info.get("endCursor")
+                page_number += 1
+            
+            print(f"  ✓ Total timesheets: {len(all_records)}")
+            return all_records
+            
+        except Exception as e:
+            raise Exception(f"Failed to download timesheets: {str(e)}")
     
     def get_approved_timesheets(self) -> List[Dict]:
         """
-        Retrieve all approved timesheets that haven't been processed for payroll.
+        Get approved timesheets that haven't been processed for payroll.
         
         Returns:
-            List of approved timesheet records
+            List of approved, unprocessed timesheet records
         """
-        print("📋 Fetching approved timesheets...")
-        
-        # Get all timesheets
-        all_timesheets = self.get_all_records('timesheets')
+        all_timesheets = self.get_all_timesheets()
         
         # Filter for approved and not processed
-        # Adjust field names based on your actual Noloco schema
         approved_timesheets = [
             ts for ts in all_timesheets
             if ts.get('approved') == True and ts.get('payroll_processed') != True
@@ -151,9 +243,105 @@ class NolocoPayrollAutomation:
         print(f"   Found {len(approved_timesheets)} approved, unprocessed timesheet(s)")
         return approved_timesheets
     
+    def get_all_payroll(self) -> List[Dict]:
+        """
+        Download all payroll records from Noloco using GraphQL pagination.
+        
+        Returns:
+            List of all payroll records
+        """
+        print("💰 Fetching all payroll records...")
+        
+        all_records = []
+        has_more_pages = True
+        cursor = None
+        page_number = 1
+        
+        try:
+            while has_more_pages:
+                if cursor:
+                    query = f"""
+                    query {{
+                        payrollCollection(first: 100, after: "{cursor}") {{
+                            edges {{
+                                node {{
+                                    id
+                                    employeeIdVal
+                                    payPeriodStart
+                                    payPeriodEnd
+                                    totalHours
+                                    regularHours
+                                    overtimeHours
+                                    grossPay
+                                    status
+                                }}
+                            }}
+                            pageInfo {{
+                                hasNextPage
+                                endCursor
+                            }}
+                        }}
+                    }}
+                    """
+                else:
+                    query = """
+                    query {
+                        payrollCollection(first: 100) {
+                            edges {
+                                node {
+                                    id
+                                    employeeIdVal
+                                    payPeriodStart
+                                    payPeriodEnd
+                                    totalHours
+                                    regularHours
+                                    overtimeHours
+                                    grossPay
+                                    status
+                                }
+                            }
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
+                        }
+                    }
+                    """
+                
+                data = run_graphql_query(query)
+                collection = data.get("payrollCollection", {})
+                edges = collection.get("edges", [])
+                page_info = collection.get("pageInfo", {})
+                
+                for edge in edges:
+                    node = edge.get("node", {})
+                    all_records.append({
+                        "id": node.get("id"),
+                        "employee_id": node.get("employeeIdVal"),
+                        "pay_period_start": node.get("payPeriodStart"),
+                        "pay_period_end": node.get("payPeriodEnd"),
+                        "total_hours": node.get("totalHours"),
+                        "regular_hours": node.get("regularHours"),
+                        "overtime_hours": node.get("overtimeHours"),
+                        "gross_pay": node.get("grossPay"),
+                        "status": node.get("status")
+                    })
+                
+                print(f"  Downloaded page {page_number}: {len(edges)} records")
+                
+                has_more_pages = page_info.get("hasNextPage", False)
+                cursor = page_info.get("endCursor")
+                page_number += 1
+            
+            print(f"  ✓ Total payroll records: {len(all_records)}")
+            return all_records
+            
+        except Exception as e:
+            raise Exception(f"Failed to download payroll records: {str(e)}")
+    
     def get_payroll_records(self, employee_id: Optional[str] = None) -> List[Dict]:
         """
-        Retrieve payroll records, optionally filtered by employee.
+        Get payroll records, optionally filtered by employee.
         
         Args:
             employee_id: Optional employee ID to filter by
@@ -161,7 +349,7 @@ class NolocoPayrollAutomation:
         Returns:
             List of payroll records
         """
-        all_payroll = self.get_all_records('payroll')
+        all_payroll = self.get_all_payroll()
         
         if employee_id:
             all_payroll = [p for p in all_payroll if p.get('employee_id') == employee_id]
@@ -179,7 +367,6 @@ class NolocoPayrollAutomation:
         Returns:
             Dict with 'start_date' and 'end_date'
         """
-        # Parse the date
         try:
             if 'T' in timesheet_date:
                 dt = datetime.fromisoformat(timesheet_date.replace('Z', '+00:00'))
@@ -218,9 +405,11 @@ class NolocoPayrollAutomation:
         payroll_records = self.get_payroll_records(employee_id)
         
         for record in payroll_records:
-            # Match on pay period dates
-            if (record.get('pay_period_start') == pay_period['start_date'] and
-                record.get('pay_period_end') == pay_period['end_date']):
+            record_start = record.get('pay_period_start', '').split('T')[0]
+            record_end = record.get('pay_period_end', '').split('T')[0]
+            
+            if (record_start == pay_period['start_date'] and
+                record_end == pay_period['end_date']):
                 return record
         
         return None
@@ -241,11 +430,10 @@ class NolocoPayrollAutomation:
         total_gross_pay = 0.0
         
         for ts in timesheets:
-            # Adjust field names based on your schema
-            total_hours += float(ts.get('total_hours', 0))
-            total_regular_hours += float(ts.get('regular_hours', 0))
-            total_overtime_hours += float(ts.get('overtime_hours', 0))
-            total_gross_pay += float(ts.get('gross_pay', 0))
+            total_hours += float(ts.get('total_hours', 0) or 0)
+            total_regular_hours += float(ts.get('regular_hours', 0) or 0)
+            total_overtime_hours += float(ts.get('overtime_hours', 0) or 0)
+            total_gross_pay += float(ts.get('gross_pay', 0) or 0)
         
         return {
             'total_hours': round(total_hours, 2),
@@ -269,30 +457,43 @@ class NolocoPayrollAutomation:
             Created payroll record
         """
         totals = self.calculate_payroll_totals(timesheets)
-        timesheet_ids = [ts.get('id') for ts in timesheets]
         
-        payroll_data = {
-            'employee_id': employee_id,
-            'pay_period_start': pay_period['start_date'],
-            'pay_period_end': pay_period['end_date'],
-            'total_hours': totals['total_hours'],
-            'regular_hours': totals['regular_hours'],
-            'overtime_hours': totals['overtime_hours'],
-            'gross_pay': totals['gross_pay'],
-            'timesheet_ids': timesheet_ids,
-            'status': 'pending',
-            'created_date': datetime.now().isoformat(),
-            'timesheet_count': totals['timesheet_count']
-        }
+        # Format dates as ISO datetime strings with timezone
+        period_start_dt = f"{pay_period['start_date']}T00:00:00-04:00"
+        period_end_dt = f"{pay_period['end_date']}T23:59:59-04:00"
+        created_dt = datetime.now().isoformat()
         
-        response = self._make_request('POST', 'payroll', data=payroll_data)
+        mutation = f"""
+        mutation {{
+            createPayroll(
+                employeeIdVal: "{employee_id}",
+                payPeriodStart: "{period_start_dt}",
+                payPeriodEnd: "{period_end_dt}",
+                totalHours: {totals['total_hours']},
+                regularHours: {totals['regular_hours']},
+                overtimeHours: {totals['overtime_hours']},
+                grossPay: {totals['gross_pay']},
+                status: "pending",
+                timesheetCount: {totals['timesheet_count']}
+            ) {{
+                id
+            }}
+        }}
+        """
+        
+        result = run_graphql_query(mutation)
+        payroll_id = result.get("createPayroll", {}).get("id")
         
         print(f"✅ Created payroll record for employee {employee_id}")
         print(f"   Pay Period: {pay_period['start_date']} to {pay_period['end_date']}")
         print(f"   Total Hours: {totals['total_hours']}, Gross Pay: ${totals['gross_pay']:.2f}")
         print(f"   Timesheets: {totals['timesheet_count']}")
         
-        return response
+        # Small delay to avoid rate limiting
+        if RATE_LIMIT_DELAY > 0:
+            time.sleep(RATE_LIMIT_DELAY)
+        
+        return {"id": payroll_id}
     
     def update_payroll_record(self, payroll_record: Dict, new_timesheets: List[Dict]) -> Dict:
         """
@@ -307,34 +508,40 @@ class NolocoPayrollAutomation:
         """
         payroll_id = payroll_record.get('id')
         
-        # Get existing timesheet IDs
-        existing_timesheet_ids = payroll_record.get('timesheet_ids', [])
-        new_timesheet_ids = [ts.get('id') for ts in new_timesheets]
-        
-        # Combine all timesheet IDs
-        all_timesheet_ids = list(set(existing_timesheet_ids + new_timesheet_ids))
-        
-        # Recalculate totals (you might want to fetch all timesheets here)
-        # For now, we'll add the new timesheet totals to existing totals
+        # Calculate new totals
         new_totals = self.calculate_payroll_totals(new_timesheets)
         
-        updated_data = {
-            'total_hours': round(payroll_record.get('total_hours', 0) + new_totals['total_hours'], 2),
-            'regular_hours': round(payroll_record.get('regular_hours', 0) + new_totals['regular_hours'], 2),
-            'overtime_hours': round(payroll_record.get('overtime_hours', 0) + new_totals['overtime_hours'], 2),
-            'gross_pay': round(payroll_record.get('gross_pay', 0) + new_totals['gross_pay'], 2),
-            'timesheet_ids': all_timesheet_ids,
-            'updated_date': datetime.now().isoformat(),
-            'timesheet_count': len(all_timesheet_ids)
-        }
+        # Add to existing totals
+        updated_total_hours = round(payroll_record.get('total_hours', 0) + new_totals['total_hours'], 2)
+        updated_regular_hours = round(payroll_record.get('regular_hours', 0) + new_totals['regular_hours'], 2)
+        updated_overtime_hours = round(payroll_record.get('overtime_hours', 0) + new_totals['overtime_hours'], 2)
+        updated_gross_pay = round(payroll_record.get('gross_pay', 0) + new_totals['gross_pay'], 2)
         
-        response = self._make_request('PATCH', f"payroll/{payroll_id}", data=updated_data)
+        mutation = f"""
+        mutation {{
+            updatePayroll(
+                id: "{payroll_id}",
+                totalHours: {updated_total_hours},
+                regularHours: {updated_regular_hours},
+                overtimeHours: {updated_overtime_hours},
+                grossPay: {updated_gross_pay}
+            ) {{
+                id
+            }}
+        }}
+        """
+        
+        result = run_graphql_query(mutation)
         
         print(f"✅ Updated payroll record {payroll_id}")
         print(f"   Added {len(new_timesheets)} new timesheet(s)")
-        print(f"   New Total Hours: {updated_data['total_hours']}, Gross Pay: ${updated_data['gross_pay']:.2f}")
+        print(f"   New Total Hours: {updated_total_hours}, Gross Pay: ${updated_gross_pay:.2f}")
         
-        return response
+        # Small delay to avoid rate limiting
+        if RATE_LIMIT_DELAY > 0:
+            time.sleep(RATE_LIMIT_DELAY)
+        
+        return result
     
     def mark_timesheets_processed(self, timesheet_ids: List[str]):
         """
@@ -345,9 +552,24 @@ class NolocoPayrollAutomation:
         """
         for ts_id in timesheet_ids:
             try:
-                self._make_request('PATCH', f"timesheets/{ts_id}", 
-                                 data={'payroll_processed': True})
+                mutation = f"""
+                mutation {{
+                    updateTimesheets(
+                        id: "{ts_id}",
+                        payrollProcessed: true
+                    ) {{
+                        id
+                    }}
+                }}
+                """
+                
+                run_graphql_query(mutation)
                 print(f"   ✓ Marked timesheet {ts_id} as processed")
+                
+                # Small delay to avoid rate limiting
+                if RATE_LIMIT_DELAY > 0:
+                    time.sleep(RATE_LIMIT_DELAY)
+                    
             except Exception as e:
                 print(f"   ⚠️  Warning: Could not mark timesheet {ts_id}: {e}")
     
@@ -374,7 +596,7 @@ class NolocoPayrollAutomation:
         
         for ts in approved_timesheets:
             employee_id = ts.get('employee_id')
-            timesheet_date = ts.get('date') or ts.get('work_date') or ts.get('created_date')
+            timesheet_date = ts.get('timesheet_date') or ts.get('clock_in')
             
             if not employee_id:
                 print(f"⚠️  Skipping timesheet {ts.get('id')} - missing employee_id")
@@ -442,6 +664,12 @@ def main():
     """
     Main execution function.
     """
+    print("=" * 70)
+    print("Pet Esthetic Payroll Processing")
+    print("=" * 70)
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print()
+    
     try:
         # Initialize automation
         automation = NolocoPayrollAutomation()
@@ -449,9 +677,15 @@ def main():
         # Run the process
         automation.process_timesheets_to_payroll()
         
+        print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
     except Exception as e:
         print(f"\n❌ ERROR: {e}")
-        raise
+        print("\nTroubleshooting tips:")
+        print("- Check your NOLOCO_API_TOKEN and NOLOCO_PROJECT_ID environment variables")
+        print("- Verify field names match your Noloco schema")
+        print("- Check if table structures have changed in Noloco")
+        exit(1)
 
 
 if __name__ == "__main__":
