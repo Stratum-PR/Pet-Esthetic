@@ -606,12 +606,12 @@ def create_pay_calculations_sheet(wb, df, styles, company_name, period_text, hou
 
 # USAGE EXAMPLE:
 # In your main payroll script, call this function like:
- create_pay_calculations_sheet(
-     wb=wb, 
-     df=df, 
-     styles=styles, 
-     company_name="Pet Esthetic",
-     period_text=period_text,
-     hourly_rate=None,  # Will use rates from user profiles
-     min_wage_rate=10.50  # Puerto Rico minimum wage
- )
+create_pay_calculations_sheet(
+    wb=wb, 
+    df=df, 
+    styles=styles, 
+    company_name="Pet Esthetic",
+    period_text=period_text,
+    hourly_rate=None,  # Will use rates from user profiles
+    min_wage_rate=10.50  # Puerto Rico minimum wage
+    )
