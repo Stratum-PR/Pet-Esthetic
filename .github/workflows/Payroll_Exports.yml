@@ -1,4 +1,4 @@
-name: Daily_Splash_Page_Timesheet_Sync
+name: Payroll_Export
 
 # Run every friday at 11:00 AM Puerto Rico time (UTC-4)
 # GitHub uses UTC, so:
