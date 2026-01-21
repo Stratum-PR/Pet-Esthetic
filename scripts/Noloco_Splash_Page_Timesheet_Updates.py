@@ -17,7 +17,7 @@ PROJECT_ID = os.getenv('NOLOCO_PROJECT_ID')
 API_URL = f"https://api.portals.noloco.io/data/{PROJECT_ID}"
 
 # Email configuration
-EMAIL_RECIPIENTS = os.getenv('EMAIL_RECIPIENTS', '').split(',')  # Comma-separated list
+EMAIL_RECIPIENTS = ["j.rodriguez@stratumpr.com"]  # Comma-separated list
 EMAIL_RECIPIENTS = [email.strip() for email in EMAIL_RECIPIENTS if email.strip()]
 
 # Add validation
