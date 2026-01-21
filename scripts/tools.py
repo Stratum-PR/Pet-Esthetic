@@ -6,10 +6,7 @@ from email.mime.base import MIMEBase
 from email import encoders
 from io import StringIO
 import pandas as pd
-
-
-GMAIL_EMAIL = os.getenv('GMAIL_EMAIL')
-GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD')
+from dotenv import load_dotenv
 
 
 def send_gmail(
