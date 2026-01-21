@@ -8,6 +8,10 @@ from io import StringIO
 import pandas as pd
 
 
+GMAIL_EMAIL = os.getenv('GMAIL_EMAIL')
+GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD')
+
+
 def send_gmail(
     to_emails,
     subject,
