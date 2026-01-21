@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header {
+            background-color: {{ status_color }};
+            color: white;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+        }
+        .header h1 {
+            margin: 0 0 10px 0;
+            font-size: 28px;
+        }
+        .header h2 {
+            margin: 0 0 10px 0;
+            font-size: 20px;
+        }
+        .summary {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            border-left: 4px solid {{ status_color }};
+        }
+        .summary h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .summary-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .summary-item:last-child {
+            border-bottom: none;
+        }
+        .summary-label {
+            font-weight: bold;
+            color: #555;
+        }
+        .summary-value {
+            font-weight: bold;
+            color: #000;
+        }
+        .section {
+            margin-bottom: 30px;
+        }
+        .section-title {
+            background-color: #e9ecef;
+            padding: 12px 15px;
+            border-radius: 5px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+        }
+        th {
+            background-color: #e9ecef;
+            font-weight: bold;
+            color: #333;
+        }
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+        .warning-box {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+        .error-box {
+            background-color: #f8d7da;
+            border-left: 4px solid #dc3545;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+        .issue-count {
+            background-color: #dc3545;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 2px solid #dee2e6;
+            font-size: 13px;
+            color: #6c757d;
+            text-align: center;
+        }
+        ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        li {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Pet Esthetic Timesheet Sync Report</h1>
+            <h2>{{ status_text }}</h2>
+            <p style="margin: 5px 0;">Generated: {{ timestamp }}</p>
+        </div>
+        
+        <div class="summary">
+            <h3>Sync Summary</h3>
+            <div class="summary-item">
+                <span class="summary-label">Splash Page Clocks (valid records):</span>
+                <span class="summary-value">{{ clocking_count }}</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">Existing Timesheets records:</span>
+                <span class="summary-value">{{ timesheets_count }}</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">Missing records found:</span>
+                <span class="summary-value">{{ missing_count }}</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">New records created:</span>
+                <span class="summary-value" style="color: #28a745;">{{ created_count }}</span>
+            </div>
+        </div>
+
+        {% if total_issues > 0 %}
+        <div class="section">
+            <div class="section-title">Issues Overview</div>
+            <div class="warning-box">
+                <strong style="font-size: 16px;">Total Issues Found: {{ total_issues }}</strong>
+                <ul style="margin-top: 10px;">
+                    {% if missing_clock_out_count > 0 %}
+                    <li><strong>URGENT - Missing Clock Out >8h:</strong> {{ missing_clock_out_count }} (employees may still be clocked in!)</li>
+                    {% endif %}
+                    {% if orphaned_count > 0 %}
+                    <li><strong>Orphaned Records:</strong> {{ orphaned_count }} (in Timesheets but not in source)</li>
+                    {% endif %}
+                    {% if flagged_hours_count > 0 %}
+                    <li><strong>Long Shifts:</strong> {{ flagged_hours_count }} (work shifts > 8 hours)</li>
+                    {% endif %}
+                    {% if failed_uploads_count > 0 %}
+                    <li><strong>Failed Uploads:</strong> {{ failed_uploads_count }}</li>
+                    {% endif %}
+                </ul>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if missing_clock_out_count > 0 %}
+        <div class="section">
+            <div class="section-title">
+                URGENT: Missing Clock Out >8 Hours
+                <span class="issue-count">{{ missing_clock_out_count }}</span>
+            </div>
+            <div class="error-box">
+                <strong>IMMEDIATE ACTION REQUIRED!</strong>
+                <p style="margin: 10px 0 5px 0;">These employees clocked in more than 8 hours ago but never clocked out:</p>
+                <ul style="margin-top: 5px;">
+                    <li>They may still be working (forgot to clock out)</li>
+                    <li>System/app error prevented clock out</li>
+                    <li>Employee emergency or incident</li>
+                </ul>
+                <p style="margin-top: 10px;"><strong>Action Required:</strong> Contact these employees immediately to verify their status!</p>
+            </div>
+            <table>
+                <tr>
+                    <th>Employee PIN</th>
+                    <th>Clock In (PR Time)</th>
+                    <th>Hours Since Clock In</th>
+                </tr>
+                {% for record in missing_clock_out[:50] %}
+                <tr>
+                    <td>{{ record.employee_pin }}</td>
+                    <td>{{ record.clock_in }}</td>
+                    <td style="font-weight: bold; color: {% if record.hours_since_clock_in > 24 %}#dc3545{% elif record.hours_since_clock_in > 16 %}#fd7e14{% else %}#ffc107{% endif %};">
+                        {{ "%.1f"|format(record.hours_since_clock_in) }}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if missing_clock_out_count > 50 %}
+                <tr>
+                    <td colspan="3" style="text-align: center; font-style: italic; background-color: #f8d7da;">
+                        {{ missing_clock_out_count - 50 }} more records (see attached Excel file)
+                    </td>
+                </tr>
+                {% endif %}
+            </table>
+        </div>
+        {% endif %}
+
+        {% if orphaned_count > 0 %}
+        <div class="section">
+            <div class="section-title">
+                Orphaned Records
+                <span class="issue-count">{{ orphaned_count }}</span>
+            </div>
+            <div class="error-box">
+                <strong>These records exist in Timesheets but NOT in Splash Page Clocks!</strong>
+                <p style="margin: 10px 0 5px 0;">This may indicate:</p>
+                <ul style="margin-top: 5px;">
+                    <li>Records were added manually to Timesheets</li>
+                    <li>Duplicate records exist in Timesheets</li>
+                    <li>Records were deleted from Splash Page Clocks</li>
+                </ul>
+                <p style="margin-top: 10px;"><strong>Action Required:</strong> Review these records in Noloco and delete if they are duplicates or errors.</p>
+            </div>
+            <table>
+                <tr>
+                    <th>Timesheet ID</th>
+                    <th>Employee PIN</th>
+                    <th>Clock In</th>
+                    <th>Clock Out</th>
+                </tr>
+                {% for record in orphaned_records[:50] %}
+                <tr>
+                    <td><code>{{ record.id }}</code></td>
+                    <td>{{ record.employee_pin }}</td>
+                    <td>{{ record.clock_in_normalized }}</td>
+                    <td>{{ record.clock_out_normalized }}</td>
+                </tr>
+                {% endfor %}
+                {% if orphaned_count > 50 %}
+                <tr>
+                    <td colspan="4" style="text-align: center; font-style: italic; background-color: #fff3cd;">
+                        {{ orphaned_count - 50 }} more records (see attached Excel file)
+                    </td>
+                </tr>
+                {% endif %}
+            </table>
+        </div>
+        {% endif %}
+
+        {% if flagged_hours_count > 0 %}
+        <div class="section">
+            <div class="section-title">
+                Long Work Shifts (>8 hours)
+                <span class="issue-count">{{ flagged_hours_count }}</span>
+            </div>
+            <div class="warning-box">
+                <strong>These records have work shifts longer than 8 hours</strong>
+                <p style="margin: 10px 0 5px 0;">This may indicate:</p>
+                <ul style="margin-top: 5px;">
+                    <li>Employees forgot to clock out (worked overnight?)</li>
+                    <li>Data entry errors in clock in/out times</li>
+                    <li>Legitimate long shifts (overtime, special events)</li>
+                </ul>
+                <p style="margin-top: 10px;"><strong>Action Required:</strong> Verify these shifts with employees and correct any errors.</p>
+            </div>
+            <table>
+                <tr>
+                    <th>Employee PIN</th>
+                    <th>Clock In</th>
+                    <th>Clock Out</th>
+                    <th>Hours Worked</th>
+                </tr>
+                {% for record in flagged_hours[:50] %}
+                <tr>
+                    <td>{{ record.employee_pin }}</td>
+                    <td>{{ record.clock_in }}</td>
+                    <td>{{ record.clock_out }}</td>
+                    <td style="font-weight: bold; color: {% if record.hours_worked > 16 %}#dc3545{% elif record.hours_worked > 12 %}#fd7e14{% else %}#ffc107{% endif %};">
+                        {{ "%.2f"|format(record.hours_worked) }}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if flagged_hours_count > 50 %}
+                <tr>
+                    <td colspan="4" style="text-align: center; font-style: italic; background-color: #fff3cd;">
+                        {{ flagged_hours_count - 50 }} more records (see attached Excel file)
+                    </td>
+                </tr>
+                {% endif %}
+            </table>
+        </div>
+        {% endif %}
+
+        {% if failed_uploads_count > 0 %}
+        <div class="section">
+            <div class="section-title">
+                Failed Uploads
+                <span class="issue-count">{{ failed_uploads_count }}</span>
+            </div>
+            <div class="error-box">
+                <strong>These records failed to upload to Timesheets</strong>
+                <p style="margin-top: 10px;"><strong>Action Required:</strong> Review the failure reasons below and fix the underlying issues.</p>
+            </div>
+            <table>
+                <tr>
+                    <th>Failure Reason</th>
+                    <th>Count</th>
+                </tr>
+                {% for reason, count in failed_reasons.items() %}
+                <tr>
+                    <td>{{ reason }}</td>
+                    <td style="font-weight: bold; color: #dc3545;">{{ count }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+        {% endif %}
+
+        <div class="footer">
+            <p><strong>Pet Esthetic Timesheet Sync</strong></p>
+            <p>Automated sync between Splash Page Clocks and Timesheets tables</p>
+            <p style="font-size: 12px; margin-top: 10px;">
+                This report was automatically generated by the Noloco Timesheet Sync script.<br>
+                For questions or issues, please contact your system administrator.
+            </p>
+        </div>
+    </div>
+</body>
+</html>
