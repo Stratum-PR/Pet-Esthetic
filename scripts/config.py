@@ -15,7 +15,7 @@ class Config:
     api_url: str
     
     # Email Configuration
-    email_recipients: List[str]
+    email_recipients: ["admin@stratumpr.com"]
     gmail_email: str = None
     gmail_app_password: str = None
     
