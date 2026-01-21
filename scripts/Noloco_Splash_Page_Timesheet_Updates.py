@@ -635,22 +635,43 @@ def validate_comparison(clocking_df, timesheets_df, missing_df):
         
         # Try to identify which records are in Timesheets but not in source
         if len(clocking_df) > 0:
+            # Create match keys for both tables
             clocking_keys = set(
                 clocking_df["employee_pin"].astype(str) + "_" +
                 clocking_df["clock_in_normalized"].astype(str) + "_" +
                 clocking_df["clock_out_normalized"].astype(str)
             )
-            timesheets_keys = set(
+            
+            timesheets_df["match_key_temp"] = (
                 timesheets_df["employee_pin"].astype(str) + "_" +
                 timesheets_df["clock_in_normalized"].astype(str) + "_" +
                 timesheets_df["clock_out_normalized"].astype(str)
             )
-            orphaned = timesheets_keys - clocking_keys
-            if orphaned:
-                print(f"         Found {len(orphaned)} records in Timesheets that don't exist in Splash Page Clocks")
-                print(f"         Sample orphaned records (first 3):")
-                for i, key in enumerate(list(orphaned)[:3]):
-                    print(f"           {i+1}. {key}")
+            
+            # Find orphaned records (in Timesheets but not in source)
+            orphaned_records = timesheets_df[~timesheets_df["match_key_temp"].isin(clocking_keys)].copy()
+            
+            if len(orphaned_records) > 0:
+                print(f"         Found {len(orphaned_records)} records in Timesheets that don't exist in Splash Page Clocks")
+                print(f"\n         ORPHANED TIMESHEET RECORDS TO INVESTIGATE:")
+                print(f"         {'ID':<25} {'Employee PIN':<15} {'Clock In':<25} {'Clock Out':<25}")
+                print(f"         {'-'*90}")
+                
+                # Show up to 10 orphaned records with their IDs
+                for idx, row in orphaned_records.head(10).iterrows():
+                    timesheet_id = row.get('id', 'N/A')
+                    emp_pin = row.get('employee_pin', 'N/A')
+                    clock_in = row.get('clock_in_normalized', 'N/A')
+                    clock_out = row.get('clock_out_normalized', 'N/A')
+                    print(f"         {timesheet_id:<25} {emp_pin:<15} {clock_in:<25} {clock_out:<25}")
+                
+                if len(orphaned_records) > 10:
+                    print(f"         ... and {len(orphaned_records) - 10} more orphaned records")
+                
+                print(f"\n         You can search for these IDs in your Noloco Timesheets table to investigate.")
+            
+            # Clean up temp column
+            timesheets_df.drop(columns=["match_key_temp"], inplace=True)
     else:
         print(f"  ✓ PASS: Timesheets records ({len(timesheets_df)}) ≤ Source records ({len(clocking_df)})")
     
