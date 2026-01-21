@@ -745,6 +745,91 @@ def validate_comparison(clocking_df, timesheets_df, missing_df):
     return validation_passed
 
 
+def validate_work_hours(records_df):
+    """
+    Validate that work shifts are reasonable (not more than 8 hours)
+    Flags records with shifts longer than 8 hours for review
+    
+    Args:
+        records_df: DataFrame with records to validate
+        
+    Returns:
+        Tuple of (valid_records_df, flagged_records_df)
+    """
+    if len(records_df) == 0:
+        return records_df, pd.DataFrame()
+    
+    print("\n" + "=" * 80)
+    print("WORK HOURS VALIDATION")
+    print("=" * 80)
+    
+    flagged_records = []
+    
+    for idx, row in records_df.iterrows():
+        try:
+            # Parse the clock in and clock out times
+            clock_in_str = row['clock_in']
+            clock_out_str = row['clock_out']
+            
+            # Parse datetimes (handle both UTC and timezone formats)
+            if clock_in_str.endswith('Z'):
+                clock_in_clean = clock_in_str.replace('Z', '').split('.')[0]
+                clock_in_dt = datetime.fromisoformat(clock_in_clean).replace(tzinfo=ZoneInfo('UTC'))
+            else:
+                clock_in_dt = datetime.fromisoformat(clock_in_str)
+            
+            if clock_out_str.endswith('Z'):
+                clock_out_clean = clock_out_str.replace('Z', '').split('.')[0]
+                clock_out_dt = datetime.fromisoformat(clock_out_clean).replace(tzinfo=ZoneInfo('UTC'))
+            else:
+                clock_out_dt = datetime.fromisoformat(clock_out_str)
+            
+            # Calculate hours worked
+            time_diff = clock_out_dt - clock_in_dt
+            hours_worked = time_diff.total_seconds() / 3600
+            
+            # Flag if more than 8 hours
+            if hours_worked > 8:
+                flagged_records.append({
+                    'index': idx,
+                    'employee_pin': row['employee_pin'],
+                    'clock_in': row['clock_in_normalized'],
+                    'clock_out': row['clock_out_normalized'],
+                    'hours_worked': round(hours_worked, 2),
+                    'timesheet_id': row.get('id', 'N/A')
+                })
+        
+        except Exception as e:
+            print(f"  ⚠️  Warning: Could not calculate hours for record {idx}: {str(e)}")
+    
+    # Report flagged records
+    if len(flagged_records) > 0:
+        print(f"\n  ⚠️  WARNING: Found {len(flagged_records)} records with shifts LONGER than 8 hours!")
+        print(f"\n  FLAGGED RECORDS (>8 hours):")
+        print(f"  {'Employee PIN':<15} {'Clock In':<25} {'Clock Out':<25} {'Hours':<10}")
+        print(f"  {'-'*75}")
+        
+        for record in flagged_records[:20]:  # Show up to 20
+            print(f"  {record['employee_pin']:<15} {record['clock_in']:<25} {record['clock_out']:<25} {record['hours_worked']:<10.2f}")
+        
+        if len(flagged_records) > 20:
+            print(f"  ... and {len(flagged_records) - 20} more flagged records")
+        
+        print(f"\n  These records may indicate:")
+        print(f"  - Employees forgot to clock out (worked overnight?)")
+        print(f"  - Data entry errors")
+        print(f"  - Legitimate long shifts that need review")
+        print(f"\n  ❓ The script will upload ALL records including those >8 hours.")
+        print(f"     Review these records manually in Noloco after upload if needed.")
+    else:
+        print(f"  ✓ PASS: All records have work shifts ≤ 8 hours")
+    
+    # Create a flagged records DataFrame for reference
+    flagged_df = pd.DataFrame(flagged_records) if flagged_records else pd.DataFrame()
+    
+    return records_df, flagged_df
+
+
 def upload_to_timesheets(records_df, employee_pin_mapping):
     """
     Upload new records to Timesheets table
@@ -877,6 +962,9 @@ try:
         # Uncomment the next line to stop if validation fails:
         # raise Exception("Validation failed - stopping before upload")
     
+    # WORK HOURS VALIDATION: Check for shifts longer than 8 hours
+    missing_df, flagged_hours_df = validate_work_hours(missing_df)
+    
     # STEP 7: Upload missing records
     created_count = upload_to_timesheets(missing_df, employee_pin_mapping)
     
@@ -888,6 +976,8 @@ try:
     print(f"Existing Timesheets records: {len(timesheets_df)}")
     print(f"Missing records found: {len(missing_df)}")
     print(f"New records created: {created_count}")
+    if len(flagged_hours_df) > 0:
+        print(f"⚠️  Records with >8 hour shifts: {len(flagged_hours_df)}")
     print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Exit with appropriate code
