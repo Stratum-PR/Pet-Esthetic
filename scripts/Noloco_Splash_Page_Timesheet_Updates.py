@@ -569,6 +569,12 @@ def find_missing_records(clocking_df, timesheets_df):
             
             print(f"  Existing Timesheets records: {len(timesheets_df)}")
             
+            # Early warning if Timesheets has more records than source
+            if len(timesheets_df) > len(clocking_df):
+                print(f"\n  ⚠️  WARNING: Timesheets has MORE records than Splash Page Clocks!")
+                print(f"              This indicates potential data integrity issues.")
+                print(f"              See validation step for details.")
+            
             # Show sample of what we're comparing
             print("\n  Sample comparison keys:")
             print("  From Splash Page Clocks:")
@@ -616,6 +622,37 @@ def validate_comparison(clocking_df, timesheets_df, missing_df):
     print("=" * 80)
     
     validation_passed = True
+    
+    # Validation 0: Check that Timesheets doesn't have more records than source
+    # This would indicate data integrity issues (records added manually, duplicates, etc.)
+    if len(timesheets_df) > len(clocking_df):
+        print(f"  ✗ FAIL: Timesheets has MORE records ({len(timesheets_df)}) than Splash Page Clocks ({len(clocking_df)})!")
+        print(f"         This indicates data integrity issues:")
+        print(f"         - Records may have been added manually to Timesheets")
+        print(f"         - Duplicate records may exist in Timesheets")
+        print(f"         - Records may have been deleted from Splash Page Clocks")
+        validation_passed = False
+        
+        # Try to identify which records are in Timesheets but not in source
+        if len(clocking_df) > 0:
+            clocking_keys = set(
+                clocking_df["employee_pin"].astype(str) + "_" +
+                clocking_df["clock_in_normalized"].astype(str) + "_" +
+                clocking_df["clock_out_normalized"].astype(str)
+            )
+            timesheets_keys = set(
+                timesheets_df["employee_pin"].astype(str) + "_" +
+                timesheets_df["clock_in_normalized"].astype(str) + "_" +
+                timesheets_df["clock_out_normalized"].astype(str)
+            )
+            orphaned = timesheets_keys - clocking_keys
+            if orphaned:
+                print(f"         Found {len(orphaned)} records in Timesheets that don't exist in Splash Page Clocks")
+                print(f"         Sample orphaned records (first 3):")
+                for i, key in enumerate(list(orphaned)[:3]):
+                    print(f"           {i+1}. {key}")
+    else:
+        print(f"  ✓ PASS: Timesheets records ({len(timesheets_df)}) ≤ Source records ({len(clocking_df)})")
     
     # Validation 1: Check that missing_df is a subset of clocking_df
     if len(missing_df) > len(clocking_df):
