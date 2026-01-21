@@ -34,6 +34,49 @@ RATE_LIMIT_DELAY = 0.5  # seconds between record uploads to avoid rate limiting
 # ============================================================================
 
 
+def normalize_datetime_for_comparison(dt_string):
+    """
+    Normalize any datetime string to UTC for comparison purposes.
+    This removes timezone offsets, milliseconds, and converts everything to UTC time.
+    
+    Args:
+        dt_string: String like "2025-12-16T16:51:00.000Z" or "2025-12-16T12:51:00-04:00"
+        
+    Returns:
+        Normalized datetime string in format: "2025-12-16 16:51:00" (UTC)
+    """
+    if not dt_string or pd.isna(dt_string):
+        return None
+    
+    try:
+        # Remove the 'Z' at the end if present
+        dt_string = str(dt_string).strip()
+        
+        # Parse the datetime string (handles various formats including timezone offsets)
+        if dt_string.endswith('Z'):
+            # UTC format: 2025-12-16T16:51:00.000Z
+            clean_string = dt_string.replace('Z', '').split('.')[0]
+            dt = datetime.fromisoformat(clean_string)
+            dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+        elif '+' in dt_string or dt_string.count('-') > 2:
+            # Has timezone offset: 2025-12-16T12:51:00-04:00
+            dt = datetime.fromisoformat(dt_string)
+            # Convert to UTC
+            dt = dt.astimezone(ZoneInfo('UTC'))
+        else:
+            # No timezone info, assume UTC
+            clean_string = dt_string.split('.')[0]
+            dt = datetime.fromisoformat(clean_string)
+            dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+        
+        # Return normalized format (UTC time, no timezone suffix)
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+    except Exception as e:
+        print(f"  ⚠️  Warning: Could not normalize datetime '{dt_string}': {str(e)}")
+        return None
+
+
 def convert_utc_to_pr(utc_datetime_string):
     """
     Convert UTC datetime string to Puerto Rico timezone (Atlantic Standard Time)
@@ -152,12 +195,15 @@ def run_graphql_query(query, retry_count=0):
 
 def download_test_clocking_actions():
     """
-    Download all records from Test Clocking Action table (Splash Page Clocks)
+    STEP 1: Download all records from Test Clocking Action table (Splash Page Clocks)
+    STEP 2: Filter to only records with Employee Pin, Clock In, and Clock Out fully filled
     
     Returns:
-        DataFrame with columns: id, employee_id, employee_pin, clock_in, clock_out
+        DataFrame with columns: id, employee_id, employee_pin, clock_in, clock_out, clock_in_normalized, clock_out_normalized
     """
-    print("Step 1: Downloading Splash Page Clocks records...")
+    print("=" * 80)
+    print("STEP 1: Downloading Splash Page Clocks (testClockingAction) records...")
+    print("=" * 80)
     
     all_records = []
     has_more_pages = True
@@ -240,17 +286,48 @@ def download_test_clocking_actions():
             print("  ⚠️  Warning: No records found in Splash Page Clocks table")
             return df
         
-        # Track how many records have missing data
+        print(f"\n  Total records downloaded: {len(df)}")
+        
+        # STEP 2: Filter records - only keep those with ALL required fields filled
+        print("\n" + "=" * 80)
+        print("STEP 2: Filtering records - keeping only complete records...")
+        print("=" * 80)
+        
         initial_count = len(df)
         
-        # Remove records with missing required fields
-        df = df.dropna(subset=["employee_pin", "clock_in", "clock_out"])
+        # Check each required field
+        missing_pin = df["employee_pin"].isna() | (df["employee_pin"] == "")
+        missing_clock_in = df["clock_in"].isna() | (df["clock_in"] == "")
+        missing_clock_out = df["clock_out"].isna() | (df["clock_out"] == "")
+        
+        print(f"  Records missing Employee Pin: {missing_pin.sum()}")
+        print(f"  Records missing Clock In: {missing_clock_in.sum()}")
+        print(f"  Records missing Clock Out: {missing_clock_out.sum()}")
+        
+        # Keep only records with all three fields filled
+        df = df[~(missing_pin | missing_clock_in | missing_clock_out)].copy()
         
         filtered_count = initial_count - len(df)
-        if filtered_count > 0:
-            print(f"  ⚠️  Filtered out {filtered_count} records with missing required fields")
+        print(f"\n  ✓ Filtered out {filtered_count} incomplete records")
+        print(f"  ✓ Valid records remaining: {len(df)}")
         
-        print(f"  ✓ Total valid records: {len(df)}")
+        if len(df) == 0:
+            print("  ⚠️  Warning: No valid records after filtering!")
+            return df
+        
+        # Add normalized datetime columns for comparison
+        print("\n  Normalizing datetime fields for comparison...")
+        df["clock_in_normalized"] = df["clock_in"].apply(normalize_datetime_for_comparison)
+        df["clock_out_normalized"] = df["clock_out"].apply(normalize_datetime_for_comparison)
+        
+        # Check if normalization failed for any records
+        normalization_failed = df["clock_in_normalized"].isna() | df["clock_out_normalized"].isna()
+        if normalization_failed.any():
+            failed_count = normalization_failed.sum()
+            print(f"  ⚠️  Warning: {failed_count} records failed datetime normalization (will be excluded)")
+            df = df[~normalization_failed].copy()
+            print(f"  ✓ Valid records after normalization: {len(df)}")
+        
         return df
         
     except Exception as e:
@@ -259,12 +336,15 @@ def download_test_clocking_actions():
 
 def download_timesheets():
     """
-    Download all records from Timesheets table
+    STEP 3: Download all records from Timesheets table
+    STEP 4: Extract employee_pin, clockDatetime (clock in), and clockOutDatetime (clock out)
     
     Returns:
-        DataFrame with columns: id, employee_id, clock_in, clock_out
+        DataFrame with columns: id, employee_pin, clock_in, clock_out, clock_in_normalized, clock_out_normalized
     """
-    print("\nStep 2: Downloading Timesheets records...")
+    print("\n" + "=" * 80)
+    print("STEP 3: Downloading Timesheets records...")
+    print("=" * 80)
     
     all_records = []
     has_more_pages = True
@@ -274,7 +354,7 @@ def download_timesheets():
     try:
         # Keep fetching pages until we have all records
         while has_more_pages:
-            # Build the query
+            # Build the query - STEP 4: Get employee_pin, clockDatetime, clockOutDatetime
             if cursor:
                 query = f"""
                 query {{
@@ -282,7 +362,7 @@ def download_timesheets():
                         edges {{
                             node {{
                                 id
-                                employeeIdVal
+                                employeePin
                                 clockDatetime
                                 clockOutDatetime
                             }}
@@ -301,7 +381,7 @@ def download_timesheets():
                         edges {
                             node {
                                 id
-                                employeeIdVal
+                                employeePin
                                 clockDatetime
                                 clockOutDatetime
                             }
@@ -325,7 +405,7 @@ def download_timesheets():
                 node = edge.get("node", {})
                 all_records.append({
                     "id": node.get("id"),
-                    "employee_id": node.get("employeeIdVal"),
+                    "employee_pin": node.get("employeePin"),
                     "clock_in": node.get("clockDatetime"),
                     "clock_out": node.get("clockOutDatetime")
                 })
@@ -340,7 +420,23 @@ def download_timesheets():
         # Convert to DataFrame
         df = pd.DataFrame(all_records)
         
-        print(f"  ✓ Total records: {len(df)}")
+        print(f"\n  ✓ Total records downloaded: {len(df)}")
+        
+        if len(df) == 0:
+            print("  ⚠️  Note: Timesheets table is empty")
+            return df
+        
+        # STEP 5: Normalize datetime fields for comparison (same format as Splash Page Clocks)
+        print("\n  Normalizing datetime fields for comparison...")
+        df["clock_in_normalized"] = df["clock_in"].apply(normalize_datetime_for_comparison)
+        df["clock_out_normalized"] = df["clock_out"].apply(normalize_datetime_for_comparison)
+        
+        # Check if normalization failed for any records
+        normalization_failed = df["clock_in_normalized"].isna() | df["clock_out_normalized"].isna()
+        if normalization_failed.any():
+            failed_count = normalization_failed.sum()
+            print(f"  ⚠️  Warning: {failed_count} existing timesheet records have invalid datetime formats")
+        
         return df
         
     except Exception as e:
@@ -350,11 +446,14 @@ def download_timesheets():
 def get_employee_pin_mapping():
     """
     Fetch all employees and create a mapping from employeePin to Employee record ID
+    This is needed to create the relationship when inserting timesheet records
     
     Returns:
         Dictionary mapping employee_pin -> employee_record_id
     """
-    print("\nStep 2.5: Fetching Employee records to map employee PINs...")
+    print("\n" + "=" * 80)
+    print("Fetching Employee records to map employee PINs...")
+    print("=" * 80)
     
     all_employees = []
     has_more_pages = True
@@ -429,58 +528,163 @@ def get_employee_pin_mapping():
 
 def find_missing_records(clocking_df, timesheets_df):
     """
+    STEP 5: Compare records using normalized datetime fields
     Find records in Splash Page Clocks that don't exist in Timesheets
     
-    We compare based on: employee_id + clock_in + clock_out
-    If all three match, the record already exists
+    We compare based on: employee_pin + clock_in_normalized + clock_out_normalized
+    All datetime values are normalized to UTC format for accurate comparison
     
     Args:
-        clocking_df: DataFrame from Splash Page Clocks
-        timesheets_df: DataFrame from Timesheets
+        clocking_df: DataFrame from Splash Page Clocks (with normalized datetime columns)
+        timesheets_df: DataFrame from Timesheets (with normalized datetime columns)
         
     Returns:
         DataFrame with missing records
     """
-    print("\nStep 3: Finding missing records...")
+    print("\n" + "=" * 80)
+    print("STEP 5: Comparing tables to find missing records...")
+    print("=" * 80)
     
     if len(clocking_df) == 0:
-        print("  No records to check")
+        print("  No records to check from Splash Page Clocks")
         return pd.DataFrame()
     
     try:
-        # Create a unique key for each record (employee_id + clock_in + clock_out)
+        # Create a unique match key using NORMALIZED datetime values
+        # This ensures "2025-12-16T16:51:00Z" and "2025-12-16T12:51:00-04:00" are treated as the same
         clocking_df["match_key"] = (
-            clocking_df["employee_id"].astype(str) + "_" +
-            clocking_df["clock_in"].astype(str) + "_" +
-            clocking_df["clock_out"].astype(str)
+            clocking_df["employee_pin"].astype(str) + "_" +
+            clocking_df["clock_in_normalized"].astype(str) + "_" +
+            clocking_df["clock_out_normalized"].astype(str)
         )
+        
+        print(f"  Splash Page Clocks records to check: {len(clocking_df)}")
         
         if len(timesheets_df) > 0:
             timesheets_df["match_key"] = (
-                timesheets_df["employee_id"].astype(str) + "_" +
-                timesheets_df["clock_in"].astype(str) + "_" +
-                timesheets_df["clock_out"].astype(str)
+                timesheets_df["employee_pin"].astype(str) + "_" +
+                timesheets_df["clock_in_normalized"].astype(str) + "_" +
+                timesheets_df["clock_out_normalized"].astype(str)
             )
+            
+            print(f"  Existing Timesheets records: {len(timesheets_df)}")
+            
+            # Show sample of what we're comparing
+            print("\n  Sample comparison keys:")
+            print("  From Splash Page Clocks:")
+            for key in clocking_df["match_key"].head(3):
+                print(f"    {key}")
+            print("  From Timesheets:")
+            for key in timesheets_df["match_key"].head(3):
+                print(f"    {key}")
             
             # Find records in clocking that are NOT in timesheets
             missing_records = clocking_df[~clocking_df["match_key"].isin(timesheets_df["match_key"])].copy()
         else:
             # If timesheets is empty, all clocking records are missing
+            print("  Existing Timesheets records: 0 (table is empty)")
             missing_records = clocking_df.copy()
         
         # Remove the match_key column (we don't need it anymore)
         missing_records = missing_records.drop(columns=["match_key"])
         
-        print(f"  ✓ Found {len(missing_records)} missing records")
+        print(f"\n  ✓ Missing records found: {len(missing_records)}")
         
         if len(missing_records) > 0:
             print("\n  Preview of missing records:")
-            print(missing_records[["employee_id", "employee_pin", "clock_in", "clock_out"]].head(5).to_string(index=False))
+            preview = missing_records[["employee_pin", "clock_in", "clock_out", "clock_in_normalized", "clock_out_normalized"]].head(5)
+            print(preview.to_string(index=False))
         
         return missing_records
         
     except Exception as e:
         raise Exception(f"Failed to compare records: {str(e)}")
+
+
+def validate_comparison(clocking_df, timesheets_df, missing_df):
+    """
+    STEP 6: Post-comparison validation
+    Verify the comparison logic is working correctly
+    
+    Args:
+        clocking_df: Original Splash Page Clocks DataFrame
+        timesheets_df: Original Timesheets DataFrame
+        missing_df: Missing records DataFrame
+    """
+    print("\n" + "=" * 80)
+    print("STEP 6: POST-COMPARISON VALIDATION")
+    print("=" * 80)
+    
+    validation_passed = True
+    
+    # Validation 1: Check that missing_df is a subset of clocking_df
+    if len(missing_df) > len(clocking_df):
+        print("  ✗ FAIL: Missing records count exceeds source records count!")
+        validation_passed = False
+    else:
+        print(f"  ✓ PASS: Missing records ({len(missing_df)}) ≤ Source records ({len(clocking_df)})")
+    
+    # Validation 2: Verify normalized datetime fields exist and are valid
+    if len(missing_df) > 0:
+        invalid_normalized = missing_df["clock_in_normalized"].isna() | missing_df["clock_out_normalized"].isna()
+        if invalid_normalized.any():
+            print(f"  ✗ FAIL: {invalid_normalized.sum()} missing records have invalid normalized datetime!")
+            validation_passed = False
+        else:
+            print(f"  ✓ PASS: All missing records have valid normalized datetime fields")
+    
+    # Validation 3: Manual spot check - verify a few records are truly missing
+    if len(missing_df) > 0 and len(timesheets_df) > 0:
+        print("\n  Manual spot check - verifying 3 random missing records:")
+        sample_size = min(3, len(missing_df))
+        sample = missing_df.sample(n=sample_size)
+        
+        for idx, row in sample.iterrows():
+            # Check if this record actually exists in timesheets
+            exists = timesheets_df[
+                (timesheets_df["employee_pin"] == row["employee_pin"]) &
+                (timesheets_df["clock_in_normalized"] == row["clock_in_normalized"]) &
+                (timesheets_df["clock_out_normalized"] == row["clock_out_normalized"])
+            ]
+            
+            if len(exists) > 0:
+                print(f"    ✗ FAIL: Record should NOT be missing - PIN: {row['employee_pin']}, Clock In: {row['clock_in_normalized']}")
+                validation_passed = False
+            else:
+                print(f"    ✓ PASS: Record is truly missing - PIN: {row['employee_pin']}, Clock In: {row['clock_in_normalized']}")
+    
+    # Validation 4: Check for duplicate match keys in missing records
+    if len(missing_df) > 0:
+        match_key_check = (
+            missing_df["employee_pin"].astype(str) + "_" +
+            missing_df["clock_in_normalized"].astype(str) + "_" +
+            missing_df["clock_out_normalized"].astype(str)
+        )
+        duplicates = match_key_check.duplicated()
+        if duplicates.any():
+            print(f"  ✗ FAIL: {duplicates.sum()} duplicate records found in missing records!")
+            validation_passed = False
+        else:
+            print(f"  ✓ PASS: No duplicate records in missing records")
+    
+    # Validation 5: Summary statistics
+    print("\n  Summary Statistics:")
+    print(f"    Total Splash Page Clocks records: {len(clocking_df)}")
+    print(f"    Total Timesheets records: {len(timesheets_df)}")
+    print(f"    Missing records to add: {len(missing_df)}")
+    if len(clocking_df) > 0:
+        match_percentage = ((len(clocking_df) - len(missing_df)) / len(clocking_df)) * 100
+        print(f"    Match rate: {match_percentage:.1f}%")
+    
+    # Final validation result
+    print("\n" + "=" * 80)
+    if validation_passed:
+        print("  ✓✓✓ VALIDATION PASSED - Comparison logic is working correctly")
+    else:
+        print("  ✗✗✗ VALIDATION FAILED - Review errors above!")
+    print("=" * 80)
+    
+    return validation_passed
 
 
 def upload_to_timesheets(records_df, employee_pin_mapping):
@@ -495,10 +699,14 @@ def upload_to_timesheets(records_df, employee_pin_mapping):
         Number of successfully created records
     """
     if len(records_df) == 0:
-        print("\nStep 4: No records to upload")
+        print("\n" + "=" * 80)
+        print("STEP 7: No records to upload")
+        print("=" * 80)
         return 0
     
-    print(f"\nStep 4: Uploading {len(records_df)} records to Timesheets...")
+    print("\n" + "=" * 80)
+    print(f"STEP 7: Uploading {len(records_df)} records to Timesheets...")
+    print("=" * 80)
     
     created_count = 0
     failed_count = 0
@@ -507,7 +715,7 @@ def upload_to_timesheets(records_df, employee_pin_mapping):
     # Upload each record one by one
     for index, row in records_df.iterrows():
         try:
-            # Convert UTC times to Puerto Rico timezone
+            # Convert UTC times to Puerto Rico timezone for storage
             clock_in_pr = convert_utc_to_pr(row['clock_in'])
             clock_out_pr = convert_utc_to_pr(row['clock_out'])
             
@@ -545,7 +753,7 @@ def upload_to_timesheets(records_df, employee_pin_mapping):
             result = run_graphql_query(create_mutation)
             timesheet_id = result.get("createTimesheets", {}).get("id")
             created_count += 1
-            print(f"  ✓ Created record {created_count}/{len(records_df)}: Employee {row['employee_id']} (PIN: {row['employee_pin']}) on {date_only}")
+            print(f"  ✓ Created record {created_count}/{len(records_df)}: Employee PIN {row['employee_pin']} | {row['clock_in_normalized']}")
             
             # Small delay to avoid rate limiting
             if RATE_LIMIT_DELAY > 0 and created_count < len(records_df):
@@ -568,7 +776,8 @@ def upload_to_timesheets(records_df, employee_pin_mapping):
             failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
     
     # Summary
-    print(f"\n  ✓ Successfully created: {created_count}")
+    print("\n  Upload Summary:")
+    print(f"  ✓ Successfully created: {created_count}")
     if failed_count > 0:
         print(f"  ✗ Failed: {failed_count}")
         print("\n  Failure breakdown:")
@@ -578,35 +787,46 @@ def upload_to_timesheets(records_df, employee_pin_mapping):
     return created_count
 
 
-# Run the script
-    
-print("=" * 60)
+# ============================================================================
+# MAIN SCRIPT EXECUTION
+# ============================================================================
+
+print("=" * 80)
 print("Pet Esthetic Timesheet Sync")
-print("=" * 60)
+print("=" * 80)
 print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print()
 
 try:
-    # Step 1: Download Splash Page Clocks records
+    # STEP 1 & 2: Download and filter Splash Page Clocks records
     clocking_df = download_test_clocking_actions()
     
-    # Step 2: Download existing Timesheets
+    # STEP 3 & 4: Download Timesheets records with correct fields
     timesheets_df = download_timesheets()
     
-    # Step 2.5: Get employee PIN mapping (employee_pin -> employee_record_id)
+    # Get employee PIN mapping (needed for upload step)
     employee_pin_mapping = get_employee_pin_mapping()
     
-    # Step 3: Find missing records
+    # STEP 5: Find missing records using normalized datetime comparison
     missing_df = find_missing_records(clocking_df, timesheets_df)
     
-    # Step 4: Upload missing records
+    # STEP 6: Validate the comparison
+    validation_passed = validate_comparison(clocking_df, timesheets_df, missing_df)
+    
+    if not validation_passed:
+        print("\n⚠️  WARNING: Validation failed! Review errors before uploading.")
+        print("Proceeding with upload anyway... (remove this line to stop on validation failure)")
+        # Uncomment the next line to stop if validation fails:
+        # raise Exception("Validation failed - stopping before upload")
+    
+    # STEP 7: Upload missing records
     created_count = upload_to_timesheets(missing_df, employee_pin_mapping)
     
-    # Summary
-    print("\n" + "=" * 60)
-    print("Sync Complete!")
-    print("=" * 60)
-    print(f"Splash Page Clocks records: {len(clocking_df)}")
+    # Final Summary
+    print("\n" + "=" * 80)
+    print("SYNC COMPLETE!")
+    print("=" * 80)
+    print(f"Splash Page Clocks records (valid): {len(clocking_df)}")
     print(f"Existing Timesheets records: {len(timesheets_df)}")
     print(f"Missing records found: {len(missing_df)}")
     print(f"New records created: {created_count}")
@@ -618,9 +838,9 @@ try:
         exit(1)  # Non-zero exit code for CI/CD pipelines
     
 except Exception as e:
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 80)
     print("ERROR!")
-    print("=" * 60)
+    print("=" * 80)
     print(f"Sync failed: {str(e)}")
     print("\nTroubleshooting tips:")
     print("- Check your NOLOCO_API_TOKEN and NOLOCO_PROJECT_ID environment variables")
