@@ -42,8 +42,8 @@ RATE_LIMIT_DELAY = 0.5  # seconds between record uploads
 PR_TIMEZONE = ZoneInfo('America/Puerto_Rico')
 
 # Default values (can be overridden via environment variables)
-DEFAULT_PAYMENT_METHOD = os.getenv('DEFAULT_PAYMENT_METHOD', 'Direct Deposit')
-DEFAULT_PAYROLL_STATUS = os.getenv('DEFAULT_PAYROLL_STATUS', 'Pending')
+DEFAULT_PAYMENT_METHOD = os.getenv('DEFAULT_PAYMENT_METHOD', 'DIRECT_DEPOSIT')
+DEFAULT_PAYROLL_STATUS = os.getenv('DEFAULT_PAYROLL_STATUS', 'PENDING')
 # ============================================================================
 
 # Create a requests session that ignores proxy environment variables
@@ -540,37 +540,88 @@ def verify_post_upload(
     
     try:
         # Fetch the payroll record we just created
-        query = f"""
-        query {{
-            payrollCollection(filter: {{id: "{payroll_id}"}}) {{
-                edges {{
-                    node {{
+        # Download all payroll records and filter in Python
+        query = """
+        query {
+            payrollCollection(first: 100) {
+                edges {
+                    node {
                         id
                         employeeIdVal
                         payPeriodStart
                         payPeriodEnd
-                        relatedTimesheets {{
-                            edges {{
-                                node {{
+                        relatedTimesheets {
+                            edges {
+                                node {
                                     id
+                                }
+                            }
+                        }
+                    }
+                }
+                pageInfo {
+                    hasNextPage
+                    endCursor
+                }
+            }
+        }
+        """
+        
+        # Handle pagination
+        all_edges = []
+        cursor = None
+        has_more = True
+        
+        while has_more:
+            if cursor:
+                query = f"""
+                query {{
+                    payrollCollection(first: 100, after: "{cursor}") {{
+                        edges {{
+                            node {{
+                                id
+                                employeeIdVal
+                                payPeriodStart
+                                payPeriodEnd
+                                relatedTimesheets {{
+                                    edges {{
+                                        node {{
+                                            id
+                                        }}
+                                    }}
                                 }}
                             }}
                         }}
+                        pageInfo {{
+                            hasNextPage
+                            endCursor
+                        }}
                     }}
                 }}
-            }}
-        }}
-        """
+                """
+            
+            data = run_graphql_query(query)
+            collection = data.get("payrollCollection", {})
+            edges = collection.get("edges", [])
+            page_info = collection.get("pageInfo", {})
+            
+            all_edges.extend(edges)
+            
+            has_more = page_info.get("hasNextPage", False)
+            cursor = page_info.get("endCursor")
         
-        data = run_graphql_query(query)
-        collection = data.get("payrollCollection", {})
-        edges = collection.get("edges", [])
+        # Filter in Python to find the payroll record by ID
+        matching_edge = None
+        for edge in all_edges:
+            if edge.get("node", {}).get("id") == payroll_id:
+                matching_edge = edge
+                break
         
-        if not edges:
+        if not matching_edge:
             errors.append(f"CRITICAL: Payroll record {payroll_id} not found after creation!")
             return False, errors
         
-        node = edges[0].get("node", {})
+        node = matching_edge.get("node", {})
         
         # Verify employee ID
         actual_employee_id = node.get("employeeIdVal")
@@ -646,25 +697,70 @@ class NolocoPayrollAutomation:
             Pay rate as float, or 0.0 if not found
         """
         try:
-            query = f"""
-            query {{
-                employeesCollection(filter: {{employeeId: "{employee_id}"}}) {{
-                    edges {{
-                        node {{
+            # Download all employees and filter in Python
+            query = """
+            query {
+                employeesCollection(first: 100) {
+                    edges {
+                        node {
                             id
+                            employeeIdVal
                             payRate
-                        }}
-                    }}
-                }}
-            }}
+                        }
+                    }
+                    pageInfo {
+                        hasNextPage
+                        endCursor
+                    }
+                }
+            }
             """
             
-            data = run_graphql_query(query)
-            collection = data.get("employeesCollection", {})
-            edges = collection.get("edges", [])
+            # Handle pagination
+            all_employees = []
+            cursor = None
+            has_more = True
             
-            if edges and len(edges) > 0:
-                pay_rate = edges[0].get("node", {}).get("payRate", 0.0)
+            while has_more:
+                if cursor:
+                    query = f"""
+                    query {{
+                        employeesCollection(first: 100, after: "{cursor}") {{
+                            edges {{
+                                node {{
+                                    id
+                                    employeeId
+                                    payRate
+                                }}
+                            }}
+                            pageInfo {{
+                                hasNextPage
+                                endCursor
+                            }}
+                        }}
+                    }}
+                    """
+                
+                data = run_graphql_query(query)
+                collection = data.get("employeesCollection", {})
+                edges = collection.get("edges", [])
+                page_info = collection.get("pageInfo", {})
+                
+                all_employees.extend(edges)
+                
+                has_more = page_info.get("hasNextPage", False)
+                cursor = page_info.get("endCursor")
+            
+            # Filter in Python to find employee by employeeIdVal
+            matching_employee = None
+            for edge in all_employees:
+                node = edge.get("node", {})
+                if node.get("employeeIdVal") == employee_id:
+                    matching_employee = node
+                    break
+            
+            if matching_employee:
+                pay_rate = matching_employee.get("payRate", 0.0)
                 return float(pay_rate) if pay_rate else 0.0
             
             print(f"  WARNING: No pay rate found for employee {employee_id}")
@@ -856,89 +952,48 @@ class NolocoPayrollAutomation:
         page_number = 1
         
         try:
+            # Download all payroll records (no filtering in GraphQL)
             while has_more_pages:
                 if cursor:
-                    if employee_id:
-                        query = f"""
-                        query {{
-                            payrollCollection(first: 100, after: "{cursor}", filter: {{employeeIdVal: "{employee_id}"}}) {{
-                                edges {{
-                                    node {{
-                                        id
-                                        employeeIdVal
-                                        payPeriodStart
-                                        payPeriodEnd
-                                        status
-                                    }}
-                                }}
-                                pageInfo {{
-                                    hasNextPage
-                                    endCursor
+                    query = f"""
+                    query {{
+                        payrollCollection(first: 100, after: "{cursor}") {{
+                            edges {{
+                                node {{
+                                    id
+                                    employeeIdVal
+                                    payPeriodStart
+                                    payPeriodEnd
+                                    status
                                 }}
                             }}
-                        }}
-                        """
-                    else:
-                        query = f"""
-                        query {{
-                            payrollCollection(first: 100, after: "{cursor}") {{
-                                edges {{
-                                    node {{
-                                        id
-                                        employeeIdVal
-                                        payPeriodStart
-                                        payPeriodEnd
-                                        status
-                                    }}
-                                }}
-                                pageInfo {{
-                                    hasNextPage
-                                    endCursor
-                                }}
+                            pageInfo {{
+                                hasNextPage
+                                endCursor
                             }}
                         }}
-                        """
+                    }}
+                    """
                 else:
-                    if employee_id:
-                        query = f"""
-                        query {{
-                            payrollCollection(first: 100, filter: {{employeeIdVal: "{employee_id}"}}) {{
-                                edges {{
-                                    node {{
-                                        id
-                                        employeeIdVal
-                                        payPeriodStart
-                                        payPeriodEnd
-                                        status
-                                    }}
-                                }}
-                                pageInfo {{
-                                    hasNextPage
-                                    endCursor
-                                }}
-                            }}
-                        }}
-                        """
-                    else:
-                        query = """
-                        query {
-                            payrollCollection(first: 100) {
-                                edges {
-                                    node {
-                                        id
-                                        employeeIdVal
-                                        payPeriodStart
-                                        payPeriodEnd
-                                        status
-                                    }
-                                }
-                                pageInfo {
-                                    hasNextPage
-                                    endCursor
+                    query = """
+                    query {
+                        payrollCollection(first: 100) {
+                            edges {
+                                node {
+                                    id
+                                    employeeIdVal
+                                    payPeriodStart
+                                    payPeriodEnd
+                                    status
                                 }
                             }
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
                         }
-                        """
+                    }
+                    """
                 
                 data = run_graphql_query(query)
                 collection = data.get("payrollCollection", {})
@@ -960,6 +1015,10 @@ class NolocoPayrollAutomation:
                 has_more_pages = page_info.get("hasNextPage", False)
                 cursor = page_info.get("endCursor")
                 page_number += 1
+            
+            # Filter in Python if employee_id provided
+            if employee_id:
+                all_records = [r for r in all_records if r.get("employee_id") == employee_id]
             
             print(f"  Total payroll records: {len(all_records)}")
             return all_records
@@ -1016,32 +1075,81 @@ class NolocoPayrollAutomation:
             
             # Fetch related timesheets
             try:
-                query = f"""
-                query {{
-                    payrollCollection(filter: {{id: "{payroll_id}"}}) {{
-                        edges {{
-                            node {{
+                # Download all payroll records and filter in Python
+                query = """
+                query {
+                    payrollCollection(first: 100) {
+                        edges {
+                            node {
                                 id
-                                relatedTimesheets {{
-                                    edges {{
-                                        node {{
+                                relatedTimesheets {
+                                    edges {
+                                        node {
                                             id
                                             shiftHoursWorked
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        pageInfo {
+                            hasNextPage
+                            endCursor
+                        }
+                    }
+                }
+                """
+                
+                # Handle pagination
+                all_edges = []
+                cursor = None
+                has_more = True
+                
+                while has_more:
+                    if cursor:
+                        query = f"""
+                        query {{
+                            payrollCollection(first: 100, after: "{cursor}") {{
+                                edges {{
+                                    node {{
+                                        id
+                                        relatedTimesheets {{
+                                            edges {{
+                                                node {{
+                                                    id
+                                                    shiftHoursWorked
+                                                }}
+                                            }}
                                         }}
                                     }}
                                 }}
+                                pageInfo {{
+                                    hasNextPage
+                                    endCursor
+                                }}
                             }}
                         }}
-                    }}
-                }}
-                """
+                        """
+                    
+                    data = run_graphql_query(query)
+                    collection = data.get("payrollCollection", {})
+                    edges = collection.get("edges", [])
+                    page_info = collection.get("pageInfo", {})
+                    
+                    all_edges.extend(edges)
+                    
+                    has_more = page_info.get("hasNextPage", False)
+                    cursor = page_info.get("endCursor")
                 
-                data = run_graphql_query(query)
-                collection = data.get("payrollCollection", {})
-                edges = collection.get("edges", [])
+                # Filter in Python to find payroll record by ID
+                matching_edge = None
+                for edge in all_edges:
+                    if edge.get("node", {}).get("id") == payroll_id:
+                        matching_edge = edge
+                        break
                 
-                if edges:
-                    node = edges[0].get("node", {})
+                if matching_edge:
+                    node = matching_edge.get("node", {})
                     related_timesheets = node.get("relatedTimesheets", {})
                     timesheet_edges = related_timesheets.get("edges", [])
                     
@@ -1063,6 +1171,9 @@ class NolocoPayrollAutomation:
                     
                     payroll_record['related_timesheet_ids'] = existing_timesheet_ids
                     payroll_record['existing_hours'] = existing_hours
+                else:
+                    payroll_record['related_timesheet_ids'] = []
+                    payroll_record['existing_hours'] = 0.0
                     
             except Exception as e:
                 print(f"  WARNING: Could not fetch related timesheets: {e}")
@@ -1128,15 +1239,12 @@ class NolocoPayrollAutomation:
         mutation = f"""
         mutation {{
             createPayroll(
-                employeeIdVal: "{employee_id}",
+                employeeIdVal: {employee_pin_str},
                 payPeriodStart: "{period_start_iso}",
                 payPeriodEnd: "{period_end_iso}",
                 payRate: {pay_rate},
-                paymentMethod: "{DEFAULT_PAYMENT_METHOD}",
-                status: "{DEFAULT_PAYROLL_STATUS}",
-                paymentDate2: "{payment_date_iso}",
-                employeeIdVal: {employee_pin_str},
-                totalHoursWorked2: {total_hours},
+                paymentMethod: {DEFAULT_PAYMENT_METHOD},
+                status: {DEFAULT_PAYROLL_STATUS},
                 relatedTimesheetsId: [{timesheet_ids_str}]
             ) {{
                 id
@@ -1209,8 +1317,7 @@ class NolocoPayrollAutomation:
         mutation {{
             updatePayroll(
                 id: "{payroll_id}",
-                relatedTimesheetsId: [{timesheet_ids_str}],
-                totalHoursWorked2: {total_hours}
+                relatedTimesheetsId: [{timesheet_ids_str}]
             ) {{
                 id
             }}
@@ -1342,7 +1449,7 @@ class NolocoPayrollAutomation:
             timesheets = group['timesheets']
             timesheet_ids = [ts.get('id') for ts in timesheets]
             
-            print(f"\n{'─'*70}")
+            print(f"\n{'-'*70}")
             print(f"Employee: {employee_id}")
             print(f"Pay Period: {pay_period['start_date']} to {pay_period['end_date']}")
             print(f"Timesheets: {len(timesheets)}")
@@ -1407,14 +1514,14 @@ class NolocoPayrollAutomation:
         print("PAYROLL PROCESSING COMPLETE")
         print("="*70)
         print(f"Summary:")
-        print(f"   • Timesheets Processed: {processed_count}")
-        print(f"   • Payroll Records Created: {created_count}")
-        print(f"   • Payroll Records Updated: {updated_count}")
+        print(f"   - Timesheets Processed: {processed_count}")
+        print(f"   - Payroll Records Created: {created_count}")
+        print(f"   - Payroll Records Updated: {updated_count}")
         
         if validation_failures:
             print(f"\nWARNING: {len(validation_failures)} payroll record(s) failed post-upload verification:")
             for failure in validation_failures:
-                print(f"   • Payroll {failure['payroll_id']} (Employee: {failure['employee_id']})")
+                print(f"   - Payroll {failure['payroll_id']} (Employee: {failure['employee_id']})")
                 for error in failure['errors']:
                     print(f"     - {error}")
             print("\nWARNING: Please review these records manually!")
