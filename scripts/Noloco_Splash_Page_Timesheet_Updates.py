@@ -351,24 +351,46 @@ def download_timesheets(config):
 
 
 def get_employee_pin_mapping(config):
-    """Fetch employee PIN to record ID mapping"""
+    """Fetch employee PIN to record ID mapping and names"""
     print("\n" + "=" * 80)
     print("Fetching Employee records to map employee PINs...")
     print("=" * 80)
     
-    df = fetch_all_records(config, "employees", ["id", "employeePin"])
+    # Try to fetch with different possible field names
+    try:
+        df = fetch_all_records(config, "employees", ["id", "employeePin", "name"])
+        name_field = "name"
+    except:
+        try:
+            df = fetch_all_records(config, "employees", ["id", "employeePin", "employeeName"])
+            name_field = "employeeName"
+        except:
+            try:
+                df = fetch_all_records(config, "employees", ["id", "employeePin", "fullName"])
+                name_field = "fullName"
+            except:
+                print("  ⚠️  Could not fetch employee names - will use PINs only")
+                df = fetch_all_records(config, "employees", ["id", "employeePin"])
+                name_field = None
     
     # Filter for employees with PINs
     df = df[df["employeePin"].notna()].copy()
     
-    mapping = dict(zip(df["employeePin"], df["id"]))
+    # Create mapping dictionaries
+    id_mapping = dict(zip(df["employeePin"], df["id"]))
     
-    if len(mapping) == 0:
-        print("  ⚠️  WARNING: No employees found with PINs!")
+    if name_field and name_field in df.columns:
+        name_mapping = dict(zip(df["employeePin"], df[name_field]))
+        print(f"  ✓ Found {len(id_mapping)} employees with PINs and names")
     else:
-        print(f"  ✓ Found {len(mapping)} employees with employee PINs")
+        # Fallback: use PIN as name
+        name_mapping = dict(zip(df["employeePin"], df["employeePin"]))
+        print(f"  ✓ Found {len(id_mapping)} employees with PINs (names not available)")
     
-    return mapping
+    if len(id_mapping) == 0:
+        print("  ⚠️  WARNING: No employees found with PINs!")
+    
+    return id_mapping, name_mapping
 
 
 def find_missing_records(clocking_df, timesheets_df):
@@ -631,7 +653,7 @@ def create_issues_excel(missing_clock_out_df, orphaned_records_df, flagged_hours
 
 def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
                          orphaned_records_df, flagged_hours_df, failed_reasons,
-                         validation_passed, missing_clock_out_df):
+                         validation_passed, missing_clock_out_df, employee_name_mapping):
     """Generate HTML email report using Jinja2 template"""
     
     # Determine status
@@ -640,13 +662,46 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     
     if not validation_passed:
         status_color = "#dc3545"
-        status_text = "CRITICAL ISSUES FOUND"
     elif has_issues:
         status_color = "#ffc107"
-        status_text = "COMPLETED WITH WARNINGS"
     else:
         status_color = "#28a745"
-        status_text = "COMPLETED SUCCESSFULLY"
+    
+    # Add employee names to missing clock out records
+    missing_clock_out_records = []
+    for record in missing_clock_out_df.to_dict('records'):
+        record['employee_name'] = employee_name_mapping.get(record.get('employee_pin'), 'Unknown')
+        missing_clock_out_records.append(record)
+    
+    # Add employee names and format flagged hours records
+    flagged_hours_records = []
+    for record in flagged_hours_df.to_dict('records'):
+        pin = record.get('employee_pin')
+        record['employee_name'] = employee_name_mapping.get(pin, 'Unknown')
+        # Extract date and times from normalized datetimes
+        if 'clock_in' in record and record['clock_in']:
+            dt_str = str(record['clock_in'])
+            record['date'] = dt_str.split(' ')[0] if ' ' in dt_str else dt_str[:10]
+            record['clock_in_time'] = dt_str.split(' ')[1] if ' ' in dt_str else 'N/A'
+        if 'clock_out' in record and record['clock_out']:
+            dt_str = str(record['clock_out'])
+            record['clock_out_time'] = dt_str.split(' ')[1] if ' ' in dt_str else 'N/A'
+        flagged_hours_records.append(record)
+    
+    # Add employee names and format orphaned records
+    orphaned_records_list = []
+    for record in orphaned_records_df.to_dict('records'):
+        pin = record.get('employee_pin') or record.get('employeePin')
+        record['employee_name'] = employee_name_mapping.get(pin, 'Unknown')
+        # Extract date and times
+        if 'clock_in_normalized' in record and record['clock_in_normalized']:
+            dt_str = str(record['clock_in_normalized'])
+            record['date'] = dt_str.split(' ')[0] if ' ' in dt_str else dt_str[:10]
+            record['clock_in_time'] = dt_str.split(' ')[1] if ' ' in dt_str else 'N/A'
+        if 'clock_out_normalized' in record and record['clock_out_normalized']:
+            dt_str = str(record['clock_out_normalized'])
+            record['clock_out_time'] = dt_str.split(' ')[1] if ' ' in dt_str else 'N/A'
+        orphaned_records_list.append(record)
     
     # Load Jinja2 template
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -659,21 +714,14 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     # Prepare data
     data = {
         'status_color': status_color,
-        'status_text': status_text,
         'timestamp': datetime.now().strftime('%A, %B %d, %Y at %I:%M %p'),
-        'clocking_count': len(clocking_df),
-        'timesheets_count': len(timesheets_df),
-        'missing_count': len(missing_df),
-        'created_count': created_count,
-        'total_issues': (len(orphaned_records_df) + len(flagged_hours_df) + 
-                        sum(failed_reasons.values()) + len(missing_clock_out_df)),
         'missing_clock_out_count': len(missing_clock_out_df),
         'orphaned_count': len(orphaned_records_df),
         'flagged_hours_count': len(flagged_hours_df),
         'failed_uploads_count': sum(failed_reasons.values()),
-        'missing_clock_out': missing_clock_out_df.to_dict('records') if len(missing_clock_out_df) > 0 else [],
-        'orphaned_records': orphaned_records_df.to_dict('records') if len(orphaned_records_df) > 0 else [],
-        'flagged_hours': flagged_hours_df.to_dict('records') if len(flagged_hours_df) > 0 else [],
+        'missing_clock_out': missing_clock_out_records,
+        'orphaned_records': orphaned_records_list,
+        'flagged_hours': flagged_hours_records,
         'failed_reasons': failed_reasons
     }
     
@@ -706,7 +754,7 @@ def main():
         timesheets_df = download_timesheets(config)
         
         # Get employee PIN mapping
-        employee_pin_mapping = get_employee_pin_mapping(config)
+        employee_pin_mapping, employee_name_mapping = get_employee_pin_mapping(config)
         
         # Find missing records
         missing_df = find_missing_records(clocking_df, timesheets_df)
@@ -742,7 +790,7 @@ def main():
         
         # Check if current time is 9 AM in Puerto Rico (allows 9:00-9:59 AM window)
         now_pr = datetime.now(ZoneInfo('America/Puerto_Rico'))
-        is_email_hour = now_pr.hour == 14
+        is_email_hour = now_pr.hour == 9
         
         # Print email decision
         print("\n" + "=" * 80)
@@ -770,7 +818,7 @@ def main():
                 email_html = generate_email_report(
                     clocking_df, timesheets_df, missing_df, created_count,
                     orphaned_records_df, flagged_hours_df, failed_reasons,
-                    validation_passed, missing_clock_out_df
+                    validation_passed, missing_clock_out_df, employee_name_mapping
                 )
                 
                 # Create Excel file with all issues
@@ -781,11 +829,11 @@ def main():
                 
                 # Determine subject based on urgency
                 if len(missing_clock_out_df) > 0:
-                    subject = f"URGENT: Timesheet Sync Alert - Missing Clock Outs - {datetime.now().strftime('%Y-%m-%d')}"
+                    subject = f"URGENTE: Alerta de Horas - Empleados Sin Marcar Salida - {datetime.now().strftime('%Y-%m-%d')}"
                 elif not validation_passed:
-                    subject = f"CRITICAL: Timesheet Sync Issues - {datetime.now().strftime('%Y-%m-%d')}"
+                    subject = f"CRÍTICO: Problemas con Sistema de Horas - {datetime.now().strftime('%Y-%m-%d')}"
                 else:
-                    subject = f"Timesheet Sync Report - Issues Found - {datetime.now().strftime('%Y-%m-%d')}"
+                    subject = f"Reporte de Horas - Problemas Detectados - {datetime.now().strftime('%Y-%m-%d')}"
                 
                 # Send email
                 send_gmail(
