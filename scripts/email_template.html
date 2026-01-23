@@ -90,10 +90,15 @@
         }
         
         .header {
-            background: linear-gradient(135deg, #f88379 0%, #fea897 100%);
-            color: white;
+            background: linear-gradient(135deg, #f88379 0%, #fea897 100%) !important;
+            background-color: #f88379 !important; /* Fallback for email clients that don't support gradients */
+            color: white !important;
             padding: 30px 20px;
             text-align: center;
+        }
+        
+        .header * {
+            color: white !important;
         }
         
         .header img {
@@ -109,12 +114,14 @@
             font-size: 24px;
             font-weight: 600;
             letter-spacing: 0.5px;
+            color: white !important;
         }
         
         .header p {
             margin: 8px 0 0 0;
             font-size: 14px;
-            opacity: 0.95;
+            opacity: 1 !important;
+            color: white !important;
         }
         
         .content {
@@ -377,16 +384,21 @@
             /* Ensure header has dark gradient background and white text on mobile */
             .header {
                 background: linear-gradient(135deg, #f88379 0%, #fea897 100%) !important;
+                background-color: #f88379 !important; /* Fallback for email clients that don't support gradients */
+                color: white !important;
+            }
+            .header * {
                 color: white !important;
             }
             .header h1 {
                 font-size: 20px;
                 color: white !important;
+                font-weight: 600 !important;
             }
             .header p {
                 font-size: 12px;
                 color: white !important;
-                opacity: 0.95 !important;
+                opacity: 1 !important;
             }
             .header img {
                 filter: brightness(0) invert(1) !important;
@@ -464,11 +476,11 @@
 </head>
 <body>
     <div class="container">
-        <div class="header">
+        <div class="header" style="background: linear-gradient(135deg, #f88379 0%, #fea897 100%); background-color: #f88379; color: white;">
             <img src="cid:pet-logo" 
                  alt="Pet Esthetic">
-            <h1>Reporte de Horas 🐾</h1>
-            <p>{{ timestamp }}</p>
+            <h1 style="color: white !important; margin: 0; font-size: 24px; font-weight: 600; letter-spacing: 0.5px;">Reporte de Horas 🐾</h1>
+            <p style="color: white !important; margin: 8px 0 0 0; font-size: 14px; opacity: 1;">{{ timestamp }}</p>
         </div>
 
         <div class="content">
