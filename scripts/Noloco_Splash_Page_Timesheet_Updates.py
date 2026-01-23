@@ -936,7 +936,7 @@ def main():
         
         # Check if current time is 9 AM in Puerto Rico (allows 9:00-9:59 AM window)
         now_pr = datetime.now(ZoneInfo('America/Puerto_Rico'))
-        is_email_hour = now_pr.hour == 9
+        is_email_hour = now_pr.hour == 16
         
         # Print email decision
         print("\n" + "=" * 80)
