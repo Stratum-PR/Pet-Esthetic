@@ -1055,132 +1055,143 @@ class NolocoPayrollAutomation:
         
         return all_payroll
     
-    def find_existing_payroll(self, employee_id: str, pay_period: Dict[str, str]) -> Optional[Dict]:
+    def find_existing_payroll(self, employee_id: str, pay_period: Dict[str, str], timesheet_ids: List[str]) -> Optional[Dict]:
         """
         Find existing payroll record for employee and pay period.
+        Checks by employee ID and whether any timesheets are already linked.
         Also fetches related timesheets to check for duplicates.
         
         Args:
             employee_id: Employee ID
             pay_period: Dict with start_date and end_date
+            timesheet_ids: List of timesheet IDs to check if already linked
             
         Returns:
             Existing payroll record with related_timesheet_ids, or None
         """
-        payroll_records = self.get_payroll_records(employee_id, pay_period)
+        # Check if any of the timesheets are already linked to a payroll record
+        # This is the most reliable way to detect duplicates - check timesheet relationships
+        matching_payroll = None
         
-        if payroll_records and len(payroll_records) > 0:
-            payroll_record = payroll_records[0]
-            payroll_id = payroll_record.get('id')
-            
-            # Fetch related timesheets
-            try:
-                # Download all payroll records and filter in Python
-                query = """
-                query {
-                    payrollCollection(first: 100) {
-                        edges {
-                            node {
+        # Query all timesheets we're processing to check if any have payrollRecord
+        # Build a query to get all our timesheets with their payrollRecord relationship
+        timesheet_ids_str = ', '.join([f'"{ts_id}"' for ts_id in timesheet_ids])
+        
+        try:
+            # Query all timesheets at once to check their payrollRecord relationship
+            query = f"""
+            query {{
+                timesheetsCollection(first: 100) {{
+                    edges {{
+                        node {{
+                            id
+                            payrollRecord {{
                                 id
-                                relatedTimesheets {
-                                    edges {
-                                        node {
+                                employeeIdVal
+                                payPeriodStart
+                                payPeriodEnd
+                                relatedTimesheets {{
+                                    edges {{
+                                        node {{
                                             id
-                                            shiftHoursWorked
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        pageInfo {
-                            hasNextPage
-                            endCursor
-                        }
-                    }
-                }
-                """
-                
-                # Handle pagination
-                all_edges = []
-                cursor = None
-                has_more = True
-                
-                while has_more:
-                    if cursor:
-                        query = f"""
-                        query {{
-                            payrollCollection(first: 100, after: "{cursor}") {{
-                                edges {{
-                                    node {{
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                    pageInfo {{
+                        hasNextPage
+                        endCursor
+                    }}
+                }}
+            }}
+            """
+            
+            # Handle pagination
+            all_edges = []
+            cursor = None
+            has_more = True
+            found_linked_timesheet = False
+            
+            while has_more and not found_linked_timesheet:
+                if cursor:
+                    query = f"""
+                    query {{
+                        timesheetsCollection(first: 100, after: "{cursor}") {{
+                            edges {{
+                                node {{
+                                    id
+                                    payrollRecord {{
                                         id
+                                        employeeIdVal
+                                        payPeriodStart
+                                        payPeriodEnd
                                         relatedTimesheets {{
                                             edges {{
                                                 node {{
                                                     id
-                                                    shiftHoursWorked
                                                 }}
                                             }}
                                         }}
                                     }}
                                 }}
-                                pageInfo {{
-                                    hasNextPage
-                                    endCursor
-                                }}
+                            }}
+                            pageInfo {{
+                                hasNextPage
+                                endCursor
                             }}
                         }}
-                        """
+                    }}
+                    """
+                
+                data = run_graphql_query(query)
+                collection = data.get("timesheetsCollection", {})
+                edges = collection.get("edges", [])
+                page_info = collection.get("pageInfo", {})
+                
+                # Check if any of our timesheets are in the results and have a payrollRecord
+                for edge in edges:
+                    node = edge.get("node", {})
+                    ts_id = node.get("id")
                     
-                    data = run_graphql_query(query)
-                    collection = data.get("payrollCollection", {})
-                    edges = collection.get("edges", [])
-                    page_info = collection.get("pageInfo", {})
-                    
+                    # Check if this is one of our timesheets
+                    if ts_id in timesheet_ids:
+                        payroll_record = node.get("payrollRecord")
+                        if payroll_record and payroll_record.get("id"):
+                            # This timesheet is already linked to a payroll record
+                            payroll_id = payroll_record.get("id")
+                            related_timesheets = payroll_record.get("relatedTimesheets", {})
+                            timesheet_edges = related_timesheets.get("edges", [])
+                            existing_timesheet_ids = [ts_edge.get("node", {}).get("id") for ts_edge in timesheet_edges]
+                            
+                            # Get the full payroll record
+                            matching_payroll = {
+                                'id': payroll_id,
+                                'employee_id': payroll_record.get("employeeIdVal"),
+                                'pay_period_start': payroll_record.get("payPeriodStart"),
+                                'pay_period_end': payroll_record.get("payPeriodEnd"),
+                                'related_timesheet_ids': existing_timesheet_ids,
+                                'existing_hours': 0.0  # Will be calculated if needed
+                            }
+                            found_linked_timesheet = True
+                            break
+                
+                if not found_linked_timesheet:
                     all_edges.extend(edges)
-                    
                     has_more = page_info.get("hasNextPage", False)
                     cursor = page_info.get("endCursor")
-                
-                # Filter in Python to find payroll record by ID
-                matching_edge = None
-                for edge in all_edges:
-                    if edge.get("node", {}).get("id") == payroll_id:
-                        matching_edge = edge
-                        break
-                
-                if matching_edge:
-                    node = matching_edge.get("node", {})
-                    related_timesheets = node.get("relatedTimesheets", {})
-                    timesheet_edges = related_timesheets.get("edges", [])
-                    
-                    existing_timesheet_ids = []
-                    existing_hours = 0.0
-                    
-                    for ts_edge in timesheet_edges:
-                        ts_node = ts_edge.get("node", {})
-                        ts_id = ts_node.get("id")
-                        hours = ts_node.get("shiftHoursWorked")
-                        
-                        if ts_id:
-                            existing_timesheet_ids.append(ts_id)
-                        if hours:
-                            try:
-                                existing_hours += float(hours)
-                            except (ValueError, TypeError):
-                                pass
-                    
-                    payroll_record['related_timesheet_ids'] = existing_timesheet_ids
-                    payroll_record['existing_hours'] = existing_hours
                 else:
-                    payroll_record['related_timesheet_ids'] = []
-                    payroll_record['existing_hours'] = 0.0
+                    break
                     
-            except Exception as e:
-                print(f"  WARNING: Could not fetch related timesheets: {e}")
-                payroll_record['related_timesheet_ids'] = []
-                payroll_record['existing_hours'] = 0.0
-            
-            return payroll_record
+        except Exception as e:
+            print(f"  WARNING: Could not check timesheets for existing payroll: {e}")
+        
+        if matching_payroll:
+            # Calculate existing hours from related timesheets if needed
+            # For now, we'll fetch them if needed during update
+            matching_payroll['existing_hours'] = 0.0
+            return matching_payroll
         
         return None
     
@@ -1461,8 +1472,8 @@ class NolocoPayrollAutomation:
                     print(f"  ERROR: Invalid pay period - {error_msg}")
                     continue
                 
-                # Check if payroll record already exists
-                existing_payroll = self.find_existing_payroll(employee_id, pay_period)
+                # Check if payroll record already exists (check by timesheet IDs to avoid duplicates)
+                existing_payroll = self.find_existing_payroll(employee_id, pay_period, timesheet_ids)
                 
                 payroll_id = None
                 if existing_payroll:
@@ -1501,7 +1512,8 @@ class NolocoPayrollAutomation:
                         print(f"  Post-upload verification passed")
                 
                 # Only mark timesheets as processed if payroll operation and verification succeeded
-                self.mark_timesheets_processed(timesheet_ids)
+                # Timesheets are automatically linked via relatedTimesheetsId, so they're already processed
+                self.mark_timesheets_processed(timesheet_ids, payroll_id)
                 processed_count += len(timesheets)
                 
             except Exception as e:
