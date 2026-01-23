@@ -670,14 +670,27 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     # Add employee names to missing clock out records
     missing_clock_out_records = []
     for record in missing_clock_out_df.to_dict('records'):
-        record['employee_name'] = employee_name_mapping.get(record.get('employee_pin'), 'Unknown')
+        pin = record.get('employee_pin')
+        employee_name = employee_name_mapping.get(pin)
+        # Only set employee_name if we have a valid name (not None, not empty, not 'Unknown')
+        if employee_name and employee_name.strip() and employee_name != 'Unknown':
+            record['employee_name'] = employee_name
+        else:
+            # Don't set employee_name, let template fall back to PIN
+            record['employee_name'] = None
         missing_clock_out_records.append(record)
     
     # Add employee names and format flagged hours records
     flagged_hours_records = []
     for record in flagged_hours_df.to_dict('records'):
         pin = record.get('employee_pin')
-        record['employee_name'] = employee_name_mapping.get(pin, 'Unknown')
+        employee_name = employee_name_mapping.get(pin)
+        # Only set employee_name if we have a valid name (not None, not empty, not 'Unknown')
+        if employee_name and employee_name.strip() and employee_name != 'Unknown':
+            record['employee_name'] = employee_name
+        else:
+            # Don't set employee_name, let template fall back to PIN
+            record['employee_name'] = None
         # Extract date and times from normalized datetimes
         if 'clock_in' in record and record['clock_in']:
             dt_str = str(record['clock_in'])
@@ -692,7 +705,13 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     orphaned_records_list = []
     for record in orphaned_records_df.to_dict('records'):
         pin = record.get('employee_pin') or record.get('employeePin')
-        record['employee_name'] = employee_name_mapping.get(pin, 'Unknown')
+        employee_name = employee_name_mapping.get(pin)
+        # Only set employee_name if we have a valid name (not None, not empty, not 'Unknown')
+        if employee_name and employee_name.strip() and employee_name != 'Unknown':
+            record['employee_name'] = employee_name
+        else:
+            # Don't set employee_name, let template fall back to PIN
+            record['employee_name'] = None
         # Extract date and times
         if 'clock_in_normalized' in record and record['clock_in_normalized']:
             dt_str = str(record['clock_in_normalized'])

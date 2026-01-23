@@ -273,8 +273,8 @@
                 border-radius: 10px;
                 overflow: hidden;
                 box-shadow: 0 2px 6px rgba(0,0,0,0.05);
-                background-color: white;
-                border: 1px solid #e0e0e0;
+                background-color: white !important;
+                border: 1px solid #e0e0e0 !important;
             }
             
             td {
@@ -286,6 +286,7 @@
                 padding-left: 50%;
                 background-color: white !important;
                 color: #333 !important;
+                border-bottom: 1px solid #f0f0f0 !important;
             }
             
             td:before {
@@ -294,7 +295,7 @@
                 left: 15px;
                 font-weight: 600;
                 text-align: left;
-                color: #344567;
+                color: #344567 !important;
                 text-transform: uppercase;
                 font-size: 11px;
             }
@@ -305,20 +306,19 @@
                 background-color: #b8e6ca !important;
                 color: #344567 !important;
                 font-weight: 600;
+                text-align: left !important;
+                padding-left: 15px !important;
+                padding-right: 15px !important;
             }
             
             td:first-child:before {
                 display: none;
             }
             
-            td:first-child {
-                text-align: left;
-                padding-left: 15px;
-            }
-            
             td:last-child {
                 border-bottom-left-radius: 10px;
                 border-bottom-right-radius: 10px;
+                border-bottom: none !important;
             }
             
             .employee-name {
@@ -353,6 +353,10 @@
         @media only screen and (max-width: 600px) {
             body {
                 padding: 10px;
+                background-color: #f9f9f9 !important;
+            }
+            .container {
+                background-color: white !important;
             }
             .header h1 {
                 font-size: 20px;
@@ -362,9 +366,35 @@
             }
             .content {
                 padding: 15px;
+                background-color: white !important;
+            }
+            .urgent-banner, .warning-banner {
+                background: linear-gradient(135deg, #f88379 0%, #fea897 100%) !important;
+                color: white !important;
+                margin: 15px 0 !important;
             }
             .urgent-banner h2, .warning-banner h2 {
                 font-size: 18px;
+                color: white !important;
+            }
+            .urgent-banner p, .warning-banner p {
+                color: white !important;
+            }
+            .action-box {
+                background-color: #fff5f4 !important;
+                color: #333 !important;
+                border-left: 5px solid #f88379 !important;
+            }
+            .action-box strong {
+                color: #f88379 !important;
+            }
+            .info-box {
+                background-color: #f0f9ff !important;
+                color: #344567 !important;
+                border-left: 5px solid #a0d3f2 !important;
+            }
+            .info-box strong {
+                color: #344567 !important;
             }
             .action-box, .info-box {
                 margin: 15px 0;
@@ -406,7 +436,7 @@
                     <tbody>
                     {% for record in missing_clock_out[:50] %}
                     <tr>
-                        <td data-label="Empleado" class="employee-name">{{ record.employee_name or record.employee_pin or 'Desconocido' }}</td>
+                        <td data-label="Empleado" class="employee-name">{% if record.employee_name and record.employee_name != 'Unknown' %}{{ record.employee_name }}{% else %}{{ record.employee_pin or 'Desconocido' }}{% endif %}</td>
                         <td data-label="PIN">{{ record.employee_pin }}</td>
                         <td data-label="Entrada">{{ record.clock_in }}</td>
                         <td data-label="Horas" class="{% if record.hours_since_clock_in > 16 %}urgent-time{% else %}warning-time{% endif %}">
@@ -446,7 +476,7 @@
                     <tbody>
                     {% for record in flagged_hours[:50] %}
                     <tr>
-                        <td data-label="Empleado" class="employee-name">{{ record.employee_name or record.employee_pin or 'Desconocido' }}</td>
+                        <td data-label="Empleado" class="employee-name">{% if record.employee_name and record.employee_name != 'Unknown' %}{{ record.employee_name }}{% else %}{{ record.employee_pin or 'Desconocido' }}{% endif %}</td>
                         <td data-label="PIN">{{ record.employee_pin }}</td>
                         <td data-label="Fecha">{{ record.date }}</td>
                         <td data-label="Entrada">{{ record.clock_in_time }}</td>
@@ -487,7 +517,7 @@
                     <tbody>
                     {% for record in orphaned_records[:50] %}
                     <tr>
-                        <td data-label="Empleado" class="employee-name">{{ record.employee_name or record.employee_pin or 'Desconocido' }}</td>
+                        <td data-label="Empleado" class="employee-name">{% if record.employee_name and record.employee_name != 'Unknown' %}{{ record.employee_name }}{% else %}{{ record.employee_pin or 'Desconocido' }}{% endif %}</td>
                         <td data-label="PIN">{{ record.employee_pin }}</td>
                         <td data-label="Fecha">{{ record.date }}</td>
                         <td data-label="Entrada">{{ record.clock_in_time }}</td>
