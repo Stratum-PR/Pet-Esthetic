@@ -205,3 +205,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+scripts/dry_run_test.py
+scripts/run_tests_simple.py
+scripts/test_run.py
+scripts/test_payroll_validation.py
