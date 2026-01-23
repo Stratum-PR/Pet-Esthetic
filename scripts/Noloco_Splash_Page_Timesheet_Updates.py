@@ -470,6 +470,20 @@ def resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping,
         return None
 
 
+def format_normalized_datetime(normalized_dt_string):
+    """Format a normalized datetime string (YYYY-MM-DD HH:MM:SS) to email format"""
+    if not normalized_dt_string:
+        return 'N/A'
+    
+    try:
+        dt = datetime.strptime(str(normalized_dt_string), '%Y-%m-%d %H:%M:%S')
+        dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+        pr_dt = dt.astimezone(ZoneInfo('America/Puerto_Rico'))
+        return pr_dt.strftime('%b-%d, %Y %I:%M %p')
+    except:
+        return 'N/A'
+
+
 def find_missing_records(clocking_df, timesheets_df):
     """Find records in Splash Page Clocks that don't exist in Timesheets"""
     print("\n" + "=" * 80)
@@ -740,22 +754,7 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     missing_clock_out_records = []
     for record in missing_clock_out_df.to_dict('records'):
         pin = record.get('employee_pin')
-        
-        # Prefer employeeFullName from clocking records, fallback to employee table mapping
-        employee_name = None
-        if pin in employee_fullname_mapping:
-            employee_name = employee_fullname_mapping[pin]
-        elif pin in employee_name_mapping:
-            employee_name = employee_name_mapping[pin]
-        elif 'employee_full_name' in record and record['employee_full_name']:
-            employee_name = record['employee_full_name']
-        
-        # Only set employee_name if we have a valid name (not None, not empty, not 'Unknown')
-        if employee_name and str(employee_name).strip() and str(employee_name) != 'Unknown':
-            record['employee_name'] = str(employee_name).strip()
-        else:
-            # Don't set employee_name, let template fall back to PIN
-            record['employee_name'] = None
+        record['employee_name'] = resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping, record)
         
         # Format clock_in datetime
         if 'clock_in_original' in record and record['clock_in_original']:
@@ -770,20 +769,7 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     flagged_hours_records = []
     for record in flagged_hours_df.to_dict('records'):
         pin = record.get('employee_pin')
-        
-        # Prefer employeeFullName from clocking records, fallback to employee table mapping
-        employee_name = None
-        if pin in employee_fullname_mapping:
-            employee_name = employee_fullname_mapping[pin]
-        elif pin in employee_name_mapping:
-            employee_name = employee_name_mapping[pin]
-        
-        # Only set employee_name if we have a valid name (not None, not empty, not 'Unknown')
-        if employee_name and str(employee_name).strip() and str(employee_name) != 'Unknown':
-            record['employee_name'] = str(employee_name).strip()
-        else:
-            # Don't set employee_name, let template fall back to PIN
-            record['employee_name'] = None
+        record['employee_name'] = resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping)
         
         # Format datetime fields - find original clockIn/clockOut from clocking_df
         clock_in_formatted = 'N/A'
@@ -820,13 +806,7 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
                 clock_out_formatted = format_datetime_for_email(matching_records.iloc[0]['clockOut'])
             else:
                 # Fallback: try to parse the normalized datetime
-                try:
-                    dt = datetime.strptime(str(record['clock_out']), '%Y-%m-%d %H:%M:%S')
-                    dt = dt.replace(tzinfo=ZoneInfo('UTC'))
-                    pr_dt = dt.astimezone(ZoneInfo('America/Puerto_Rico'))
-                    clock_out_formatted = pr_dt.strftime('%b-%d, %Y %I:%M %p')
-                except:
-                    pass
+                clock_out_formatted = format_normalized_datetime(record['clock_out'])
         
         record['date'] = date_formatted
         record['clock_in_time'] = clock_in_formatted
@@ -838,20 +818,7 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     orphaned_records_list = []
     for record in orphaned_records_df.to_dict('records'):
         pin = record.get('employee_pin') or record.get('employeePin')
-        
-        # Prefer employeeFullName from clocking records, fallback to employee table mapping
-        employee_name = None
-        if pin in employee_fullname_mapping:
-            employee_name = employee_fullname_mapping[pin]
-        elif pin in employee_name_mapping:
-            employee_name = employee_name_mapping[pin]
-        
-        # Only set employee_name if we have a valid name (not None, not empty, not 'Unknown')
-        if employee_name and str(employee_name).strip() and str(employee_name) != 'Unknown':
-            record['employee_name'] = str(employee_name).strip()
-        else:
-            # Don't set employee_name, let template fall back to PIN
-            record['employee_name'] = None
+        record['employee_name'] = resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping)
         
         # Format datetime fields - use original clockDatetime/clockOutDatetime from timesheets
         clock_in_formatted = 'N/A'
@@ -871,25 +838,12 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
         
         # Fallback: try to format normalized datetime if original not found
         if clock_in_formatted == 'N/A' and 'clock_in_normalized' in record and record['clock_in_normalized']:
-            # Parse normalized format 'YYYY-MM-DD HH:MM:SS' and convert
-            try:
-                dt = datetime.strptime(str(record['clock_in_normalized']), '%Y-%m-%d %H:%M:%S')
-                dt = dt.replace(tzinfo=ZoneInfo('UTC'))
-                pr_dt = dt.astimezone(ZoneInfo('America/Puerto_Rico'))
-                clock_in_formatted = pr_dt.strftime('%b-%d, %Y %I:%M %p')
+            clock_in_formatted = format_normalized_datetime(record['clock_in_normalized'])
+            if clock_in_formatted != 'N/A':
                 date_formatted = clock_in_formatted.split(',')[0] if ',' in clock_in_formatted else clock_in_formatted.split(' ')[0]
-            except:
-                pass
         
         if clock_out_formatted == 'N/A' and 'clock_out_normalized' in record and record['clock_out_normalized']:
-            # Parse normalized format 'YYYY-MM-DD HH:MM:SS' and convert
-            try:
-                dt = datetime.strptime(str(record['clock_out_normalized']), '%Y-%m-%d %H:%M:%S')
-                dt = dt.replace(tzinfo=ZoneInfo('UTC'))
-                pr_dt = dt.astimezone(ZoneInfo('America/Puerto_Rico'))
-                clock_out_formatted = pr_dt.strftime('%b-%d, %Y %I:%M %p')
-            except:
-                pass
+            clock_out_formatted = format_normalized_datetime(record['clock_out_normalized'])
         
         record['date'] = date_formatted
         record['clock_in_time'] = clock_in_formatted
@@ -982,7 +936,7 @@ def main():
         
         # Check if current time is 9 AM in Puerto Rico (allows 9:00-9:59 AM window)
         now_pr = datetime.now(ZoneInfo('America/Puerto_Rico'))
-        is_email_hour = now_pr.hour == 16
+        is_email_hour = now_pr.hour == 9
         
         # Print email decision
         print("\n" + "=" * 80)
