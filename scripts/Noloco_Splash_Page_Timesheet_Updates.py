@@ -736,11 +736,15 @@ def main():
             print(f"URGENT - Missing clock out >8h: {len(missing_clock_out_df)}")
         print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # Email reporting - only if there are issues
+        # Email reporting - only if there are issues AND it's 9 AM Puerto Rico time
         has_issues = (len(orphaned_records_df) > 0 or len(flagged_hours_df) > 0 or
                      len(failed_reasons) > 0 or len(missing_clock_out_df) > 0 or not validation_passed)
         
-        if has_issues and config.email_recipients:
+        # Check if current time is 9 AM in Puerto Rico (allows 9:00-9:59 AM window)
+        now_pr = datetime.now(ZoneInfo('America/Puerto_Rico'))
+        is_email_hour = now_pr.hour == 9
+        
+        if has_issues and config.email_recipients and is_email_hour:
             print("\n" + "=" * 80)
             print("SENDING EMAIL REPORT (Issues Found)")
             print("=" * 80)
@@ -782,6 +786,10 @@ def main():
                 print(f"✗ Failed to send email report: {str(e)}")
                 print("  The sync completed successfully, but the email notification failed.")
         
+        elif has_issues and not is_email_hour:
+            print(f"\n⚠️  Issues found, but it's not email time (current hour: {now_pr.hour}:00 PR time)")
+            print(f"    Email will be sent at 9:00 AM Puerto Rico time if issues persist.")
+            print(f"    Timesheet sync completed - records have been updated.")
         elif has_issues and not config.email_recipients:
             print("\n⚠️  Issues found but EMAIL_RECIPIENTS not configured. No email sent.")
         else:
