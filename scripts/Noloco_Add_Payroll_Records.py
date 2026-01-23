@@ -62,24 +62,41 @@ def run_graphql_query(query, retry_count=0):
     try:
         # Disable proxy for Noloco API requests
         # Some systems have misconfigured proxy settings that interfere
-        proxies = {
-            'http': None,
-            'https': None
-        }
+        # Temporarily unset proxy environment variables
+        old_http_proxy = os.environ.pop('HTTP_PROXY', None)
+        old_https_proxy = os.environ.pop('HTTPS_PROXY', None)
+        old_http_proxy_lower = os.environ.pop('http_proxy', None)
+        old_https_proxy_lower = os.environ.pop('https_proxy', None)
         
-        response = requests.post(
-            API_URL,
-            headers=HEADERS,
-            json={"query": query},
-            proxies=proxies,
-            timeout=30
-        )
+        try:
+            proxies = {
+                'http': None,
+                'https': None
+            }
+            
+            response = requests.post(
+                API_URL,
+                headers=HEADERS,
+                json={"query": query},
+                proxies=proxies,
+                timeout=30
+            )
+        finally:
+            # Restore proxy environment variables if they existed
+            if old_http_proxy is not None:
+                os.environ['HTTP_PROXY'] = old_http_proxy
+            if old_https_proxy is not None:
+                os.environ['HTTPS_PROXY'] = old_https_proxy
+            if old_http_proxy_lower is not None:
+                os.environ['http_proxy'] = old_http_proxy_lower
+            if old_https_proxy_lower is not None:
+                os.environ['https_proxy'] = old_https_proxy_lower
         
         # Handle rate limiting with retry
         if response.status_code == 429:
             if retry_count < MAX_RETRIES:
                 wait_time = RETRY_DELAY * (retry_count + 1)
-                print(f"  ⚠️  Rate limited, waiting {wait_time}s before retry {retry_count + 1}/{MAX_RETRIES}...")
+                print(f"  WARNING: Rate limited, waiting {wait_time}s before retry {retry_count + 1}/{MAX_RETRIES}...")
                 time.sleep(wait_time)
                 return run_graphql_query(query, retry_count + 1)
             else:
@@ -89,7 +106,7 @@ def run_graphql_query(query, retry_count=0):
         if response.status_code >= 500:
             if retry_count < MAX_RETRIES:
                 wait_time = RETRY_DELAY * (retry_count + 1)
-                print(f"  ⚠️  Server error {response.status_code}, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
+                print(f"  WARNING: Server error {response.status_code}, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
                 time.sleep(wait_time)
                 return run_graphql_query(query, retry_count + 1)
             else:
@@ -118,7 +135,7 @@ def run_graphql_query(query, retry_count=0):
     except requests.exceptions.Timeout:
         if retry_count < MAX_RETRIES:
             wait_time = RETRY_DELAY * (retry_count + 1)
-            print(f"  ⚠️  Request timeout, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
+            print(f"  WARNING: Request timeout, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
             time.sleep(wait_time)
             return run_graphql_query(query, retry_count + 1)
         else:
@@ -127,7 +144,7 @@ def run_graphql_query(query, retry_count=0):
     except requests.exceptions.ConnectionError as e:
         if retry_count < MAX_RETRIES:
             wait_time = RETRY_DELAY * (retry_count + 1)
-            print(f"  ⚠️  Connection error, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
+            print(f"  WARNING: Connection error, retrying in {wait_time}s ({retry_count + 1}/{MAX_RETRIES})...")
             time.sleep(wait_time)
             return run_graphql_query(query, retry_count + 1)
         else:
@@ -659,11 +676,11 @@ class NolocoPayrollAutomation:
                 pay_rate = edges[0].get("node", {}).get("payRate", 0.0)
                 return float(pay_rate) if pay_rate else 0.0
             
-            print(f"  ⚠️  Warning: No pay rate found for employee {employee_id}")
+            print(f"  WARNING: No pay rate found for employee {employee_id}")
             return 0.0
             
         except Exception as e:
-            print(f"  ⚠️  Warning: Could not fetch pay rate for employee {employee_id}: {e}")
+            print(f"  WARNING: Could not fetch pay rate for employee {employee_id}: {e}")
             return 0.0
     
     def get_all_timesheets(self, filter_approved: bool = False) -> List[Dict]:
@@ -867,7 +884,7 @@ class NolocoPayrollAutomation:
                         if period_start_date <= ts_date <= period_end_date:
                             filtered_timesheets.append(ts)
                     except (ValueError, AttributeError) as e:
-                        print(f"  ⚠️  Warning: Could not parse timesheet date '{timesheet_date_str}': {e}")
+                        print(f"  WARNING: Could not parse timesheet date '{timesheet_date_str}': {e}")
                         continue
                 
                 approved_timesheets = filtered_timesheets
@@ -886,7 +903,7 @@ class NolocoPayrollAutomation:
         Returns:
             List of all payroll records
         """
-        print("💰 Fetching all payroll records...")
+        print("Fetching all payroll records...")
         
         all_records = []
         has_more_pages = True
@@ -1103,7 +1120,7 @@ class NolocoPayrollAutomation:
                     payroll_record['existing_hours'] = existing_hours
                     
             except Exception as e:
-                print(f"  ⚠️  Warning: Could not fetch related timesheets: {e}")
+                print(f"  WARNING: Could not fetch related timesheets: {e}")
                 payroll_record['related_timesheet_ids'] = []
                 payroll_record['existing_hours'] = 0.0
             
@@ -1133,7 +1150,7 @@ class NolocoPayrollAutomation:
         # Get employee PIN from first timesheet (all should have same employee)
         employee_pin = timesheets[0].get('employee_pin') if timesheets else None
         if not employee_pin:
-            print(f"  ⚠️  Warning: No employeePin found in timesheets for employee {employee_id}")
+            print(f"  WARNING: No employeePin found in timesheets for employee {employee_id}")
         
         # Calculate total hours worked
         total_hours = calculate_total_hours(timesheets)
@@ -1185,7 +1202,7 @@ class NolocoPayrollAutomation:
         result = run_graphql_query(mutation)
         payroll_id = result.get("createPayroll", {}).get("id")
         
-        print(f"✅ Created payroll record for employee {employee_id}")
+        print(f"Created payroll record for employee {employee_id}")
         print(f"   Pay Period: {pay_period['start_date']} to {pay_period['end_date']}")
         print(f"   Payment Date: {payment_date}")
         print(f"   Pay Rate: ${pay_rate:.2f}/hr")
@@ -1227,10 +1244,10 @@ class NolocoPayrollAutomation:
                 new_timesheet_ids.append(ts_id)
                 truly_new_timesheets.append(ts)
             elif ts_id in existing_timesheet_ids:
-                print(f"   ⚠️  Timesheet {ts_id} already linked, skipping")
+                print(f"   WARNING: Timesheet {ts_id} already linked, skipping")
         
         if not new_timesheet_ids:
-            print(f"✅ No new timesheets to add to payroll record {payroll_id}")
+            print(f"No new timesheets to add to payroll record {payroll_id}")
             return {"id": payroll_id}
         
         # Calculate new hours from new timesheets
@@ -1257,7 +1274,7 @@ class NolocoPayrollAutomation:
         
         result = run_graphql_query(mutation)
         
-        print(f"✅ Updated payroll record {payroll_id}")
+        print(f"Updated payroll record {payroll_id}")
         print(f"   Added {len(new_timesheet_ids)} new timesheet(s)")
         print(f"   {len(existing_timesheet_ids)} timesheet(s) already existed")
         print(f"   Total Hours: {total_hours:.2f} (existing: {existing_hours:.2f}, new: {new_hours:.2f})")
@@ -1305,12 +1322,12 @@ class NolocoPayrollAutomation:
         Uses current bi-weekly pay period for filtering.
         """
         print("\n" + "="*70)
-        print("🚀 STARTING PAYROLL PROCESSING")
+        print("STARTING PAYROLL PROCESSING")
         print("="*70 + "\n")
         
         # Calculate current pay period
         current_pay_period = get_current_pay_period()
-        print(f"📅 Current Pay Period: {current_pay_period['start_date']} to {current_pay_period['end_date']}\n")
+        print(f"Current Pay Period: {current_pay_period['start_date']} to {current_pay_period['end_date']}\n")
         
         # Get approved timesheets for current pay period
         approved_timesheets = self.get_approved_timesheets(pay_period=current_pay_period)
@@ -1319,7 +1336,7 @@ class NolocoPayrollAutomation:
             print("✓ No approved timesheets to process for current pay period.\n")
             return
         
-        print(f"📊 Processing {len(approved_timesheets)} approved timesheet(s)\n")
+        print(f"Processing {len(approved_timesheets)} approved timesheet(s)\n")
         
         # Group timesheets by employee
         # All timesheets are already in the same pay period (current period)
@@ -1329,7 +1346,7 @@ class NolocoPayrollAutomation:
             # Validate timesheet
             is_valid, error_msg = validate_timesheet(ts)
             if not is_valid:
-                print(f"⚠️  Skipping timesheet {ts.get('id', 'unknown')} - {error_msg}")
+                print(f"WARNING: Skipping timesheet {ts.get('id', 'unknown')} - {error_msg}")
                 continue
             
             employee_id = ts.get('employee_id')
@@ -1348,7 +1365,7 @@ class NolocoPayrollAutomation:
         
         # CRITICAL: Pre-upload validation
         print("\n" + "="*70)
-        print("🔍 PRE-UPLOAD VALIDATION")
+        print("PRE-UPLOAD VALIDATION")
         print("="*70)
         
         # Get all existing payroll records for validation
@@ -1357,15 +1374,15 @@ class NolocoPayrollAutomation:
         is_valid, validation_errors = validate_pre_upload(grouped_timesheets, all_existing_payroll)
         
         if not is_valid:
-            print("\n❌ CRITICAL VALIDATION ERRORS DETECTED - ABORTING PROCESSING")
+            print("\nCRITICAL VALIDATION ERRORS DETECTED - ABORTING PROCESSING")
             print("="*70)
             for error in validation_errors:
-                print(f"  ❌ {error}")
+                print(f"  ERROR: {error}")
             print("="*70)
-            print("\n⚠️  No payroll records were created. Please fix the errors above and try again.")
+            print("\nWARNING: No payroll records were created. Please fix the errors above and try again.")
             raise Exception("Pre-upload validation failed. See errors above.")
         
-        print("✅ All pre-upload validations passed")
+        print("All pre-upload validations passed")
         print("="*70 + "\n")
         
         # Process each group
@@ -1381,15 +1398,15 @@ class NolocoPayrollAutomation:
             timesheet_ids = [ts.get('id') for ts in timesheets]
             
             print(f"\n{'─'*70}")
-            print(f"👤 Employee: {employee_id}")
-            print(f"📅 Pay Period: {pay_period['start_date']} to {pay_period['end_date']}")
-            print(f"📋 Timesheets: {len(timesheets)}")
+            print(f"Employee: {employee_id}")
+            print(f"Pay Period: {pay_period['start_date']} to {pay_period['end_date']}")
+            print(f"Timesheets: {len(timesheets)}")
             
             try:
                 # Validate pay period
                 is_valid, error_msg = validate_pay_period(pay_period)
                 if not is_valid:
-                    print(f"  ❌ ERROR: Invalid pay period - {error_msg}")
+                    print(f"  ERROR: Invalid pay period - {error_msg}")
                     continue
                 
                 # Check if payroll record already exists
@@ -1409,7 +1426,7 @@ class NolocoPayrollAutomation:
                 
                 # CRITICAL: Post-upload verification
                 if payroll_id:
-                    print(f"  🔍 Verifying payroll record {payroll_id}...")
+                    print(f"  Verifying payroll record {payroll_id}...")
                     is_valid, verify_errors = verify_post_upload(
                         payroll_id,
                         employee_id,
@@ -1418,7 +1435,7 @@ class NolocoPayrollAutomation:
                     )
                     
                     if not is_valid:
-                        print(f"  ❌ CRITICAL: Post-upload verification failed for payroll {payroll_id}!")
+                        print(f"  CRITICAL: Post-upload verification failed for payroll {payroll_id}!")
                         for error in verify_errors:
                             print(f"     {error}")
                         validation_failures.append({
@@ -1429,33 +1446,33 @@ class NolocoPayrollAutomation:
                         # Don't mark timesheets as processed if verification failed
                         continue
                     else:
-                        print(f"  ✅ Post-upload verification passed")
+                        print(f"  Post-upload verification passed")
                 
                 # Only mark timesheets as processed if payroll operation and verification succeeded
                 self.mark_timesheets_processed(timesheet_ids)
                 processed_count += len(timesheets)
                 
             except Exception as e:
-                print(f"  ❌ ERROR processing payroll for employee {employee_id}: {e}")
-                print(f"  ⚠️  Timesheets NOT marked as processed - will retry on next run")
+                print(f"  ERROR processing payroll for employee {employee_id}: {e}")
+                print(f"  WARNING: Timesheets NOT marked as processed - will retry on next run")
                 # Don't mark timesheets as processed if payroll failed
                 continue
         
         print("\n" + "="*70)
-        print("✅ PAYROLL PROCESSING COMPLETE")
+        print("PAYROLL PROCESSING COMPLETE")
         print("="*70)
-        print(f"📊 Summary:")
+        print(f"Summary:")
         print(f"   • Timesheets Processed: {processed_count}")
         print(f"   • Payroll Records Created: {created_count}")
         print(f"   • Payroll Records Updated: {updated_count}")
         
         if validation_failures:
-            print(f"\n⚠️  WARNING: {len(validation_failures)} payroll record(s) failed post-upload verification:")
+            print(f"\nWARNING: {len(validation_failures)} payroll record(s) failed post-upload verification:")
             for failure in validation_failures:
                 print(f"   • Payroll {failure['payroll_id']} (Employee: {failure['employee_id']})")
                 for error in failure['errors']:
                     print(f"     - {error}")
-            print("\n⚠️  Please review these records manually!")
+            print("\nWARNING: Please review these records manually!")
         
         print("="*70 + "\n")
 
@@ -1480,7 +1497,7 @@ def main():
         print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
     except Exception as e:
-        print(f"\n❌ ERROR: {e}")
+        print(f"\nERROR: {e}")
         print("\nTroubleshooting tips:")
         print("- Check your NOLOCO_API_TOKEN and NOLOCO_PROJECT_ID environment variables")
         print("- Verify field names match your Noloco schema")
