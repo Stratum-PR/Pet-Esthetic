@@ -3,6 +3,7 @@ import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
 from email import encoders
 from io import StringIO
 import pandas as pd
@@ -15,7 +16,8 @@ def send_gmail(
     from_email=None,
     app_password=None,
     attachment_path=None,
-    attachment_filename=None
+    attachment_filename=None,
+    inline_images=None
 ):
     """
     Send an email using Gmail SMTP with App Password
@@ -28,6 +30,9 @@ def send_gmail(
         app_password: Gmail App Password (optional, reads from env GMAIL_APP_PASSWORD)
         attachment_path: Path to file to attach (supports .csv, .xlsx, .zip, etc)
         attachment_filename: Name for the attachment (optional, uses filename from path)
+        inline_images: List of dicts with 'path' and 'cid' keys for inline images
+                      Example: [{'path': '/path/to/image.png', 'cid': 'logo'}]
+                      Images can be referenced in HTML as <img src="cid:logo">
         
     Returns:
         True if email sent successfully, False otherwise
@@ -47,6 +52,14 @@ def send_gmail(
             body_html="<p>Please see attached data.</p>",
             attachment_path="/path/to/report.xlsx",
             attachment_filename="weekly_report.xlsx"
+        )
+        
+        # With inline image
+        send_gmail(
+            to_emails="recipient@example.com",
+            subject="Email with Logo",
+            body_html='<img src="cid:logo" alt="Logo">',
+            inline_images=[{'path': '/path/to/logo.png', 'cid': 'logo'}]
         )
     """
     
@@ -76,15 +89,50 @@ def send_gmail(
     
     try:
         # Create message
-        msg = MIMEMultipart('alternative')
+        msg = MIMEMultipart('related')  # Changed from 'alternative' to 'related' to support inline images
         msg['Subject'] = subject
         msg['From'] = from_email
         msg['To'] = ', '.join(to_emails)  # Join multiple emails with comma
         
+        # Create alternative part for HTML
+        msg_alternative = MIMEMultipart('alternative')
+        msg.attach(msg_alternative)
+        
         # Attach HTML body if provided
         if body_html:
             html_part = MIMEText(body_html, 'html')
-            msg.attach(html_part)
+            msg_alternative.attach(html_part)
+        
+        # Attach inline images if provided
+        if inline_images:
+            for img_info in inline_images:
+                img_path = img_info.get('path')
+                img_cid = img_info.get('cid')
+                
+                if not img_path or not img_cid:
+                    continue
+                
+                if os.path.exists(img_path):
+                    # Read image file
+                    with open(img_path, 'rb') as f:
+                        img_data = f.read()
+                    
+                    # Determine image type from extension
+                    img_ext = os.path.splitext(img_path)[1].lower()
+                    if img_ext == '.png':
+                        img_type = 'png'
+                    elif img_ext in ['.jpg', '.jpeg']:
+                        img_type = 'jpeg'
+                    elif img_ext == '.gif':
+                        img_type = 'gif'
+                    else:
+                        img_type = 'png'  # Default to PNG
+                    
+                    # Create MIMEImage
+                    img = MIMEImage(img_data, img_type)
+                    img.add_header('Content-ID', f'<{img_cid}>')
+                    img.add_header('Content-Disposition', 'inline')
+                    msg.attach(img)
         
         # Attach file if provided
         if attachment_path and os.path.exists(attachment_path):

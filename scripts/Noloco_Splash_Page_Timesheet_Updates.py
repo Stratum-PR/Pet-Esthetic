@@ -835,13 +835,24 @@ def main():
                 else:
                     subject = f"Reporte de Horas - Problemas Detectados - {datetime.now().strftime('%Y-%m-%d')}"
                 
+                # Get path to logo image for inline embedding
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                logo_path = os.path.join(script_dir, '..', 'assets', 'pet_esthetic_transparent.png')
+                logo_path = os.path.normpath(logo_path)
+                
+                # Prepare inline images
+                inline_images = []
+                if os.path.exists(logo_path):
+                    inline_images = [{'path': logo_path, 'cid': 'pet-logo'}]
+                
                 # Send email
                 send_gmail(
                     to_emails=config.email_recipients,
                     subject=subject,
                     body_html=email_html,
                     attachment_path=excel_path,
-                    attachment_filename=f'timesheet_issues_{datetime.now().strftime("%Y%m%d")}.xlsx'
+                    attachment_filename=f'timesheet_issues_{datetime.now().strftime("%Y%m%d")}.xlsx',
+                    inline_images=inline_images
                 )
                 
                 print(f"\n✓ Email successfully sent to: {', '.join(config.email_recipients)}")
