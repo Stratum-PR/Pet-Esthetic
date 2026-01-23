@@ -337,7 +337,8 @@ def check_missing_clock_out(config):
                     'id': row['id'],
                     'employee_id': row['employeeIdVal'],
                     'employee_pin': row['employeePin'],
-                    'employee_full_name': row.get('employeeFullName'),
+                    'employeeFullName': row.get('employeeFullName'),  # Keep original field name from testClockingAction
+                    'employee_full_name': row.get('employeeFullName'),  # Also keep for backward compatibility
                     'clock_in': clock_in_pr.strftime('%Y-%m-%d %H:%M:%S'),
                     'clock_in_original': row['clockIn'],
                     'hours_since_clock_in': round(hours_since, 1)
@@ -360,7 +361,14 @@ def check_missing_clock_out(config):
     else:
         print("  ✓ No records with missing clock out >8 hours")
     
-    return pd.DataFrame(problematic_records)
+    # Create DataFrame and ensure employeeFullName column is preserved
+    df_result = pd.DataFrame(problematic_records)
+    if len(df_result) > 0 and 'employeeFullName' not in df_result.columns:
+        # If employeeFullName column is missing, try to add it from employee_full_name
+        if 'employee_full_name' in df_result.columns:
+            df_result['employeeFullName'] = df_result['employee_full_name']
+    
+    return df_result
 
 
 def download_timesheets(config):
@@ -750,11 +758,45 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     # Get employeeFullName mapping from clocking records (preferred)
     employee_fullname_mapping = get_employee_fullname_mapping_from_clocking(clocking_df)
     
+    # Also get employeeFullName from missing_clock_out_df (they come from splash page clocks - testClockingAction)
+    if len(missing_clock_out_df) > 0:
+        for idx, row in missing_clock_out_df.iterrows():
+            pin = row.get('employee_pin')
+            # Try both field names (employeeFullName from testClockingAction, employee_full_name as fallback)
+            full_name = None
+            if 'employeeFullName' in row and pd.notna(row.get('employeeFullName')):
+                full_name = row.get('employeeFullName')
+            elif 'employee_full_name' in row and pd.notna(row.get('employee_full_name')):
+                full_name = row.get('employee_full_name')
+            
+            if pin and full_name and str(full_name).strip() and str(full_name).strip() != 'Unknown':
+                employee_fullname_mapping[pin] = str(full_name).strip()
+    
     # Add employee names to missing clock out records
     missing_clock_out_records = []
     for record in missing_clock_out_df.to_dict('records'):
         pin = record.get('employee_pin')
-        record['employee_name'] = resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping, record)
+        # Prefer employeeFullName from the record itself (from splash page clocks - testClockingAction table)
+        employee_name = None
+        
+        # First priority: employeeFullName directly from the record (from testClockingAction)
+        # Check both field names and handle NaN values properly
+        if 'employeeFullName' in record:
+            full_name_val = record.get('employeeFullName')
+            if full_name_val is not None and pd.notna(full_name_val) and str(full_name_val).strip() and str(full_name_val).strip() != 'Unknown':
+                employee_name = str(full_name_val).strip()
+        
+        if not employee_name and 'employee_full_name' in record:
+            full_name_val = record.get('employee_full_name')
+            if full_name_val is not None and pd.notna(full_name_val) and str(full_name_val).strip() and str(full_name_val).strip() != 'Unknown':
+                employee_name = str(full_name_val).strip()
+        
+        # Second priority: from mapping (if not found in record)
+        if not employee_name:
+            employee_name = resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping, record)
+        
+        # Set the employee_name field - only set if we have a valid name
+        record['employee_name'] = employee_name if employee_name else None
         
         # Format clock_in datetime
         if 'clock_in_original' in record and record['clock_in_original']:
@@ -769,7 +811,25 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     flagged_hours_records = []
     for record in flagged_hours_df.to_dict('records'):
         pin = record.get('employee_pin')
-        record['employee_name'] = resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping)
+        
+        # Get employeeFullName from clocking_df (preferred source)
+        employee_name = None
+        if 'clock_in' in record and record['clock_in'] and pin:
+            # Try to find original record from clocking_df using normalized time
+            matching_records = clocking_df[
+                (clocking_df['employeePin'].astype(str) == str(pin)) & 
+                (clocking_df['clock_in_normalized'].astype(str) == str(record['clock_in']))
+            ]
+            if len(matching_records) > 0:
+                matching_record = matching_records.iloc[0]
+                if 'employeeFullName' in matching_record and pd.notna(matching_record['employeeFullName']):
+                    employee_name = str(matching_record['employeeFullName']).strip()
+        
+        # Fallback to mapping if not found in clocking_df
+        if not employee_name:
+            employee_name = resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping)
+        
+        record['employee_name'] = employee_name
         
         # Format datetime fields - find original clockIn/clockOut from clocking_df
         clock_in_formatted = 'N/A'
@@ -784,7 +844,13 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
             ]
             if len(matching_records) > 0:
                 clock_in_formatted = format_datetime_for_email(matching_records.iloc[0]['clockIn'])
-                date_formatted = clock_in_formatted.split(',')[0] if ',' in clock_in_formatted else clock_in_formatted.split(' ')[0]
+                # Extract date part (e.g., "Jan-14, 2026" from "Jan-14, 2026 9:03 AM")
+                if ',' in clock_in_formatted:
+                    date_formatted = ','.join(clock_in_formatted.split(',')[:2]).strip()
+                else:
+                    # Fallback: extract first two parts
+                    parts = clock_in_formatted.split(' ')
+                    date_formatted = ' '.join(parts[:2]) if len(parts) >= 2 else clock_in_formatted
             else:
                 # Fallback: try to parse the normalized datetime
                 try:
@@ -792,7 +858,13 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
                     dt = dt.replace(tzinfo=ZoneInfo('UTC'))
                     pr_dt = dt.astimezone(ZoneInfo('America/Puerto_Rico'))
                     clock_in_formatted = pr_dt.strftime('%b-%d, %Y %I:%M %p')
-                    date_formatted = clock_in_formatted.split(',')[0] if ',' in clock_in_formatted else clock_in_formatted.split(' ')[0]
+                    # Extract date part (e.g., "Jan-14, 2026" from "Jan-14, 2026 9:03 AM")
+                    if ',' in clock_in_formatted:
+                        date_formatted = ','.join(clock_in_formatted.split(',')[:2]).strip()
+                    else:
+                        # Fallback: extract first two parts
+                        parts = clock_in_formatted.split(' ')
+                        date_formatted = ' '.join(parts[:2]) if len(parts) >= 2 else clock_in_formatted
                 except:
                     pass
         
@@ -815,10 +887,14 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     
     # Add employee names and format orphaned records
     # Orphaned records come from timesheets_df, so use original clockDatetime/clockOutDatetime
+    # But try to get employeeFullName from clocking_df if possible
     orphaned_records_list = []
     for record in orphaned_records_df.to_dict('records'):
         pin = record.get('employee_pin') or record.get('employeePin')
-        record['employee_name'] = resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping)
+        
+        # Prefer employeeFullName from clocking_df mapping (from splash page clocks)
+        employee_name = resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping)
+        record['employee_name'] = employee_name
         
         # Format datetime fields - use original clockDatetime/clockOutDatetime from timesheets
         clock_in_formatted = 'N/A'
@@ -832,7 +908,13 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
                 ts_record = matching_timesheet.iloc[0]
                 if 'clockDatetime' in ts_record and pd.notna(ts_record['clockDatetime']):
                     clock_in_formatted = format_datetime_for_email(ts_record['clockDatetime'])
-                    date_formatted = clock_in_formatted.split(',')[0] if ',' in clock_in_formatted else clock_in_formatted.split(' ')[0]
+                    # Extract date part (e.g., "Jan-14, 2026" from "Jan-14, 2026 9:03 AM")
+                    if ',' in clock_in_formatted:
+                        date_formatted = ','.join(clock_in_formatted.split(',')[:2]).strip()
+                    else:
+                        # Fallback: extract first two parts
+                        parts = clock_in_formatted.split(' ')
+                        date_formatted = ' '.join(parts[:2]) if len(parts) >= 2 else clock_in_formatted
                 if 'clockOutDatetime' in ts_record and pd.notna(ts_record['clockOutDatetime']):
                     clock_out_formatted = format_datetime_for_email(ts_record['clockOutDatetime'])
         
@@ -840,7 +922,13 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
         if clock_in_formatted == 'N/A' and 'clock_in_normalized' in record and record['clock_in_normalized']:
             clock_in_formatted = format_normalized_datetime(record['clock_in_normalized'])
             if clock_in_formatted != 'N/A':
-                date_formatted = clock_in_formatted.split(',')[0] if ',' in clock_in_formatted else clock_in_formatted.split(' ')[0]
+                # Extract date part (e.g., "Jan-14, 2026" from "Jan-14, 2026 9:03 AM")
+                if ',' in clock_in_formatted:
+                    date_formatted = ','.join(clock_in_formatted.split(',')[:2]).strip()
+                else:
+                    # Fallback: extract first two parts
+                    parts = clock_in_formatted.split(' ')
+                    date_formatted = ' '.join(parts[:2]) if len(parts) >= 2 else clock_in_formatted
         
         if clock_out_formatted == 'N/A' and 'clock_out_normalized' in record and record['clock_out_normalized']:
             clock_out_formatted = format_normalized_datetime(record['clock_out_normalized'])

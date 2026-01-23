@@ -72,6 +72,8 @@
                 }
                 td:before {
                     color: #a0d3f2 !important;
+                    visibility: visible !important;
+                    opacity: 1 !important;
                 }
             }
         }
@@ -267,32 +269,36 @@
             
             td {
                 display: block !important;
-                text-align: right;
+                text-align: left;
                 padding: 10px 15px;
                 border: none !important;
                 position: relative;
-                padding-left: 50%;
                 background-color: white !important;
                 color: #333 !important;
                 border-bottom: 1px solid #f0f0f0 !important;
             }
             
-            td:before {
-                content: attr(data-label) !important;
-                position: absolute;
-                left: 15px;
+            /* Mobile labels - using actual HTML spans for email client compatibility */
+            .mobile-label {
+                display: inline-block !important;
                 font-weight: 600;
-                text-align: left;
                 color: #344567 !important;
                 text-transform: uppercase;
                 font-size: 11px;
-                display: block !important;
+                letter-spacing: 0.3px;
+                margin-right: 8px;
+            }
+            
+            /* Hide :before pseudo-elements on mobile since we use HTML labels */
+            td:before {
+                display: none !important;
+                content: none !important;
             }
             
             td:first-child {
                 border-top-left-radius: 10px;
                 border-top-right-radius: 10px;
-                background-color: #b8e6ca !important;
+                background-color: white !important;
                 color: #344567 !important;
                 font-weight: 600;
                 text-align: left !important;
@@ -301,7 +307,8 @@
             }
             
             td:first-child:before {
-                display: none;
+                display: none !important;
+                content: none !important;
             }
             
             td:last-child {
@@ -338,6 +345,13 @@
             margin-bottom: 8px;
         }
         
+        /* Desktop: hide mobile labels */
+        @media only screen and (min-width: 601px) {
+            .mobile-label {
+                display: none !important;
+            }
+        }
+        
         /* Mobile-specific adjustments */
         @media only screen and (max-width: 600px) {
             body {
@@ -356,6 +370,10 @@
             .content {
                 padding: 15px;
                 background-color: white !important;
+            }
+            /* Show mobile labels on mobile */
+            .mobile-label {
+                display: inline-block !important;
             }
             .urgent-banner, .warning-banner {
                 background: linear-gradient(135deg, #f88379 0%, #fea897 100%) !important;
@@ -426,10 +444,10 @@
                     {% for record in missing_clock_out[:50] %}
                     <tr>
                         <td data-label="Empleado" class="employee-name">{% if record.employee_name and record.employee_name != 'Unknown' %}{{ record.employee_name }}{% else %}{{ record.employee_pin or 'Desconocido' }}{% endif %}</td>
-                        <td data-label="PIN">{{ record.employee_pin }}</td>
-                        <td data-label="Entrada">{{ record.clock_in }}</td>
+                        <td data-label="PIN"><span class="mobile-label">PIN:</span> {{ record.employee_pin }}</td>
+                        <td data-label="Entrada"><span class="mobile-label">ENTRADA:</span> {{ record.clock_in }}</td>
                         <td data-label="Horas" class="{% if record.hours_since_clock_in > 16 %}urgent-time{% else %}warning-time{% endif %}">
-                            {{ "%.1f"|format(record.hours_since_clock_in) }} h
+                            <span class="mobile-label">HORAS:</span> {{ "%.1f"|format(record.hours_since_clock_in) }} h
                         </td>
                     </tr>
                     {% endfor %}
@@ -466,12 +484,12 @@
                     {% for record in flagged_hours[:50] %}
                     <tr>
                         <td data-label="Empleado" class="employee-name">{% if record.employee_name and record.employee_name != 'Unknown' %}{{ record.employee_name }}{% else %}{{ record.employee_pin or 'Desconocido' }}{% endif %}</td>
-                        <td data-label="PIN">{{ record.employee_pin }}</td>
-                        <td data-label="Fecha">{{ record.date }}</td>
-                        <td data-label="Entrada">{{ record.clock_in_time }}</td>
-                        <td data-label="Salida">{{ record.clock_out_time }}</td>
+                        <td data-label="PIN"><span class="mobile-label">PIN:</span> {{ record.employee_pin }}</td>
+                        <td data-label="Fecha"><span class="mobile-label">FECHA:</span> {{ record.date }}</td>
+                        <td data-label="Entrada"><span class="mobile-label">ENTRADA:</span> {{ record.clock_in_time }}</td>
+                        <td data-label="Salida"><span class="mobile-label">SALIDA:</span> {{ record.clock_out_time }}</td>
                         <td data-label="Horas" class="{% if record.hours_worked > 12 %}urgent-time{% else %}warning-time{% endif %}">
-                            {{ "%.1f"|format(record.hours_worked) }}h
+                            <span class="mobile-label">HORAS:</span> {{ "%.1f"|format(record.hours_worked) }}h
                         </td>
                     </tr>
                     {% endfor %}
@@ -507,10 +525,10 @@
                     {% for record in orphaned_records[:50] %}
                     <tr>
                         <td data-label="Empleado" class="employee-name">{% if record.employee_name and record.employee_name != 'Unknown' %}{{ record.employee_name }}{% else %}{{ record.employee_pin or 'Desconocido' }}{% endif %}</td>
-                        <td data-label="PIN">{{ record.employee_pin }}</td>
-                        <td data-label="Fecha">{{ record.date }}</td>
-                        <td data-label="Entrada">{{ record.clock_in_time }}</td>
-                        <td data-label="Salida">{{ record.clock_out_time }}</td>
+                        <td data-label="PIN"><span class="mobile-label">PIN:</span> {{ record.employee_pin }}</td>
+                        <td data-label="Fecha"><span class="mobile-label">FECHA:</span> {{ record.date }}</td>
+                        <td data-label="Entrada"><span class="mobile-label">ENTRADA:</span> {{ record.clock_in_time }}</td>
+                        <td data-label="Salida"><span class="mobile-label">SALIDA:</span> {{ record.clock_out_time }}</td>
                     </tr>
                     {% endfor %}
                     </tbody>
@@ -541,8 +559,8 @@
                     <tbody>
                     {% for reason, count in failed_reasons.items() %}
                     <tr>
-                        <td data-label="Problema">{{ reason }}</td>
-                        <td data-label="Cantidad" class="urgent-time">{{ count }}</td>
+                        <td data-label="Problema"><span class="mobile-label">PROBLEMA:</span> {{ reason }}</td>
+                        <td data-label="Cantidad" class="urgent-time"><span class="mobile-label">CANTIDAD:</span> {{ count }}</td>
                     </tr>
                     {% endfor %}
                     </tbody>
