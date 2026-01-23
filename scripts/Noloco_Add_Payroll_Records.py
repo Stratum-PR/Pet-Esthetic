@@ -46,6 +46,18 @@ DEFAULT_PAYMENT_METHOD = os.getenv('DEFAULT_PAYMENT_METHOD', 'Direct Deposit')
 DEFAULT_PAYROLL_STATUS = os.getenv('DEFAULT_PAYROLL_STATUS', 'Pending')
 # ============================================================================
 
+# Create a requests session that ignores proxy environment variables
+_session = None
+
+def get_session():
+    """Get or create a requests session that ignores proxy environment variables"""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        # trust_env=False tells requests to ignore HTTP_PROXY/HTTPS_PROXY env vars
+        # This is the key difference - prevents reading proxy settings from environment
+        _session.trust_env = False
+    return _session
 
 def run_graphql_query(query, retry_count=0):
     """
@@ -60,37 +72,16 @@ def run_graphql_query(query, retry_count=0):
         Response data as dictionary
     """
     try:
-        # Disable proxy for Noloco API requests
-        # Some systems have misconfigured proxy settings that interfere
-        # Temporarily unset proxy environment variables
-        old_http_proxy = os.environ.pop('HTTP_PROXY', None)
-        old_https_proxy = os.environ.pop('HTTPS_PROXY', None)
-        old_http_proxy_lower = os.environ.pop('http_proxy', None)
-        old_https_proxy_lower = os.environ.pop('https_proxy', None)
+        # Use session with trust_env=False to ignore proxy environment variables
+        # This prevents Windows/system proxy settings from interfering
+        session = get_session()
         
-        try:
-            proxies = {
-                'http': None,
-                'https': None
-            }
-            
-            response = requests.post(
-                API_URL,
-                headers=HEADERS,
-                json={"query": query},
-                proxies=proxies,
-                timeout=30
-            )
-        finally:
-            # Restore proxy environment variables if they existed
-            if old_http_proxy is not None:
-                os.environ['HTTP_PROXY'] = old_http_proxy
-            if old_https_proxy is not None:
-                os.environ['HTTPS_PROXY'] = old_https_proxy
-            if old_http_proxy_lower is not None:
-                os.environ['http_proxy'] = old_http_proxy_lower
-            if old_https_proxy_lower is not None:
-                os.environ['https_proxy'] = old_https_proxy_lower
+        response = session.post(
+            API_URL,
+            headers=HEADERS,
+            json={"query": query},
+            timeout=30
+        )
         
         # Handle rate limiting with retry
         if response.status_code == 429:
@@ -555,7 +546,7 @@ def verify_post_upload(
                 edges {{
                     node {{
                         id
-                        employeeId
+                        employeeIdVal
                         payPeriodStart
                         payPeriodEnd
                         relatedTimesheets {{
@@ -582,7 +573,7 @@ def verify_post_upload(
         node = edges[0].get("node", {})
         
         # Verify employee ID
-        actual_employee_id = node.get("employeeId")
+        actual_employee_id = node.get("employeeIdVal")
         if actual_employee_id != expected_employee_id:
             errors.append(
                 f"CRITICAL: Employee ID mismatch! Expected {expected_employee_id}, "
@@ -703,111 +694,57 @@ class NolocoPayrollAutomation:
         try:
             while has_more_pages:
                 if cursor:
-                    if filter_approved:
-                        query = f"""
-                        query {{
-                            timesheetsCollection(first: 100, after: "{cursor}", filter: {{approved: true, payrollProcessed: false}}) {{
-                                edges {{
-                                    node {{
-                                        id
-                                        employeeId
-                                        approved
-                                        payrollProcessed
+                    query = f"""
+                    query {{
+                        timesheetsCollection(first: 100, after: "{cursor}") {{
+                            edges {{
+                                node {{
+                                    id
+                                    employeeIdVal
+                                    approved
                                     timesheetDate
                                     employeePin
                                     shiftHoursWorked
                                     clockDatetime
                                     clockOutDatetime
-                                    periodStartDate
-                                    periodEndDate
-                                    }}
-                                }}
-                                pageInfo {{
-                                    hasNextPage
-                                    endCursor
-                                }}
-                            }}
-                        }}
-                        """
-                    else:
-                        query = f"""
-                        query {{
-                            timesheetsCollection(first: 100, after: "{cursor}") {{
-                                edges {{
-                                    node {{
+                                    payrollRecord {{
                                         id
-                                        employeeId
-                                        approved
-                                        payrollProcessed
-                                    timesheetDate
-                                    employeePin
-                                    shiftHoursWorked
-                                    clockDatetime
-                                    clockOutDatetime
-                                    periodStartDate
-                                    periodEndDate
                                     }}
                                 }}
-                                pageInfo {{
-                                    hasNextPage
-                                    endCursor
-                                }}
+                            }}
+                            pageInfo {{
+                                hasNextPage
+                                endCursor
                             }}
                         }}
-                        """
+                    }}
+                    """
                 else:
-                    if filter_approved:
-                        query = """
-                        query {
-                            timesheetsCollection(first: 100, filter: {approved: true, payrollProcessed: false}) {
-                                edges {
-                                    node {
-                                        id
-                                        employeeId
-                                        approved
-                                        payrollProcessed
+                    query = """
+                    query {
+                        timesheetsCollection(first: 100) {
+                            edges {
+                                node {
+                                    id
+                                    employeeIdVal
+                                    approved
                                     timesheetDate
                                     employeePin
                                     shiftHoursWorked
                                     clockDatetime
                                     clockOutDatetime
-                                    periodStartDate
-                                    periodEndDate
-                                    }
-                                }
-                                pageInfo {
-                                    hasNextPage
-                                    endCursor
-                                }
-                            }
-                        }
-                        """
-                    else:
-                        query = """
-                        query {
-                            timesheetsCollection(first: 100) {
-                                edges {
-                                    node {
+                                    payrollRecord {
                                         id
-                                        employeeId
-                                        approved
-                                        payrollProcessed
-                                    timesheetDate
-                                    employeePin
-                                    shiftHoursWorked
-                                    clockDatetime
-                                    clockOutDatetime
-                                    periodStartDate
-                                    periodEndDate
                                     }
                                 }
-                                pageInfo {
-                                    hasNextPage
-                                    endCursor
-                                }
+                            }
+                            pageInfo {
+                                hasNextPage
+                                endCursor
                             }
                         }
-                        """
+                    }
+                    """
                 
                 data = run_graphql_query(query)
                 collection = data.get("timesheetsCollection", {})
@@ -816,18 +753,20 @@ class NolocoPayrollAutomation:
                 
                 for edge in edges:
                     node = edge.get("node", {})
+                    payroll_record = node.get("payrollRecord")
+                    # Determine if payroll is processed by checking if payrollRecord exists and has an id
+                    payroll_processed = payroll_record is not None and payroll_record.get("id") is not None
+                    
                     all_records.append({
                         "id": node.get("id"),
-                        "employee_id": node.get("employeeId"),
+                        "employee_id": node.get("employeeIdVal"),
                         "approved": node.get("approved"),
-                        "payroll_processed": node.get("payrollProcessed"),
+                        "payroll_processed": payroll_processed,
                         "timesheet_date": node.get("timesheetDate"),
                         "employee_pin": node.get("employeePin"),
                         "shift_hours_worked": node.get("shiftHoursWorked"),
                         "clock_datetime": node.get("clockDatetime"),
-                        "clock_out_datetime": node.get("clockOutDatetime"),
-                        "period_start_date": node.get("periodStartDate"),
-                        "period_end_date": node.get("periodEndDate")
+                        "clock_out_datetime": node.get("clockOutDatetime")
                     })
                 
                 print(f"  Downloaded page {page_number}: {len(edges)} records")
@@ -836,7 +775,7 @@ class NolocoPayrollAutomation:
                 cursor = page_info.get("endCursor")
                 page_number += 1
             
-            print(f"  ✓ Total timesheets: {len(all_records)}")
+            print(f"  Total timesheets: {len(all_records)}")
             return all_records
             
         except Exception as e:
@@ -853,8 +792,14 @@ class NolocoPayrollAutomation:
         Returns:
             List of approved, unprocessed timesheet records
         """
-        # Use GraphQL filter for approved/unprocessed (more efficient)
-        all_timesheets = self.get_all_timesheets(filter_approved=True)
+        # Get all timesheets and filter in Python (GraphQL filter not supported)
+        all_timesheets = self.get_all_timesheets(filter_approved=False)
+        
+        # Filter to approved and unprocessed
+        approved_timesheets = [
+            ts for ts in all_timesheets 
+            if ts.get('approved') and not ts.get('payroll_processed')
+        ]
         
         # Filter by pay period if provided
         if pay_period:
@@ -916,11 +861,11 @@ class NolocoPayrollAutomation:
                     if employee_id:
                         query = f"""
                         query {{
-                            payrollCollection(first: 100, after: "{cursor}", filter: {{employeeId: "{employee_id}"}}) {{
+                            payrollCollection(first: 100, after: "{cursor}", filter: {{employeeIdVal: "{employee_id}"}}) {{
                                 edges {{
                                     node {{
                                         id
-                                        employeeId
+                                        employeeIdVal
                                         payPeriodStart
                                         payPeriodEnd
                                         status
@@ -940,7 +885,7 @@ class NolocoPayrollAutomation:
                                 edges {{
                                     node {{
                                         id
-                                        employeeId
+                                        employeeIdVal
                                         payPeriodStart
                                         payPeriodEnd
                                         status
@@ -957,11 +902,11 @@ class NolocoPayrollAutomation:
                     if employee_id:
                         query = f"""
                         query {{
-                            payrollCollection(first: 100, filter: {{employeeId: "{employee_id}"}}) {{
+                            payrollCollection(first: 100, filter: {{employeeIdVal: "{employee_id}"}}) {{
                                 edges {{
                                     node {{
                                         id
-                                        employeeId
+                                        employeeIdVal
                                         payPeriodStart
                                         payPeriodEnd
                                         status
@@ -981,7 +926,7 @@ class NolocoPayrollAutomation:
                                 edges {
                                     node {
                                         id
-                                        employeeId
+                                        employeeIdVal
                                         payPeriodStart
                                         payPeriodEnd
                                         status
@@ -1004,7 +949,7 @@ class NolocoPayrollAutomation:
                     node = edge.get("node", {})
                     all_records.append({
                         "id": node.get("id"),
-                        "employee_id": node.get("employeeId"),
+                        "employee_id": node.get("employeeIdVal"),
                         "pay_period_start": node.get("payPeriodStart"),
                         "pay_period_end": node.get("payPeriodEnd"),
                         "status": node.get("status")
@@ -1016,7 +961,7 @@ class NolocoPayrollAutomation:
                 cursor = page_info.get("endCursor")
                 page_number += 1
             
-            print(f"  ✓ Total payroll records: {len(all_records)}")
+            print(f"  Total payroll records: {len(all_records)}")
             return all_records
             
         except Exception as e:
@@ -1183,7 +1128,7 @@ class NolocoPayrollAutomation:
         mutation = f"""
         mutation {{
             createPayroll(
-                employeeId: "{employee_id}",
+                employeeIdVal: "{employee_id}",
                 payPeriodStart: "{period_start_iso}",
                 payPeriodEnd: "{period_end_iso}",
                 payRate: {pay_rate},
@@ -1306,7 +1251,7 @@ class NolocoPayrollAutomation:
                 """
                 
                 run_graphql_query(mutation)
-                print(f"   ✓ Marked timesheet {ts_id} as processed")
+                print(f"   Marked timesheet {ts_id} as processed")
                 
                 # Small delay to avoid rate limiting
                 if RATE_LIMIT_DELAY > 0:
@@ -1333,7 +1278,7 @@ class NolocoPayrollAutomation:
         approved_timesheets = self.get_approved_timesheets(pay_period=current_pay_period)
         
         if not approved_timesheets:
-            print("✓ No approved timesheets to process for current pay period.\n")
+            print("No approved timesheets to process for current pay period.\n")
             return
         
         print(f"Processing {len(approved_timesheets)} approved timesheet(s)\n")

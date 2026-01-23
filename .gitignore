@@ -209,3 +209,4 @@ scripts/dry_run_test.py
 scripts/run_tests_simple.py
 scripts/test_run.py
 scripts/test_payroll_validation.py
+scripts/test_with_new_token.py
