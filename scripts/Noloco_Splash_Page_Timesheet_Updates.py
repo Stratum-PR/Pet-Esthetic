@@ -101,10 +101,18 @@ def convert_utc_to_pr(utc_datetime_string):
 def run_graphql_query(config, query, retry_count=0):
     """Send a GraphQL query to Noloco API with retry logic"""
     try:
+        # Disable proxy for Noloco API requests
+        # Some systems have misconfigured proxy settings that interfere
+        proxies = {
+            'http': None,
+            'https': None
+        }
+        
         response = requests.post(
             config.api_url,
             headers=config.headers,
             json={"query": query},
+            proxies=proxies,
             timeout=config.request_timeout
         )
         
