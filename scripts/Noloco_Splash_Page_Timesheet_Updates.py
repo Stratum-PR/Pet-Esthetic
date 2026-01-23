@@ -451,6 +451,25 @@ def get_employee_fullname_mapping_from_clocking(clocking_df):
     return mapping
 
 
+def resolve_employee_name(pin, employee_fullname_mapping, employee_name_mapping, record=None):
+    """Helper function to resolve employee name from multiple sources"""
+    employee_name = None
+    
+    # Prefer employeeFullName from clocking records, fallback to employee table mapping
+    if pin in employee_fullname_mapping:
+        employee_name = employee_fullname_mapping[pin]
+    elif pin in employee_name_mapping:
+        employee_name = employee_name_mapping[pin]
+    elif record and 'employee_full_name' in record and record['employee_full_name']:
+        employee_name = record['employee_full_name']
+    
+    # Only return if we have a valid name (not None, not empty, not 'Unknown')
+    if employee_name and str(employee_name).strip() and str(employee_name) != 'Unknown':
+        return str(employee_name).strip()
+    else:
+        return None
+
+
 def find_missing_records(clocking_df, timesheets_df):
     """Find records in Splash Page Clocks that don't exist in Timesheets"""
     print("\n" + "=" * 80)
@@ -714,17 +733,6 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
                          validation_passed, missing_clock_out_df, employee_name_mapping):
     """Generate HTML email report using Jinja2 template"""
     
-    # Determine status
-    has_issues = (len(orphaned_records_df) > 0 or len(flagged_hours_df) > 0 or
-                  len(failed_reasons) > 0 or len(missing_clock_out_df) > 0 or not validation_passed)
-    
-    if not validation_passed:
-        status_color = "#dc3545"
-    elif has_issues:
-        status_color = "#ffc107"
-    else:
-        status_color = "#28a745"
-    
     # Get employeeFullName mapping from clocking records (preferred)
     employee_fullname_mapping = get_employee_fullname_mapping_from_clocking(clocking_df)
     
@@ -898,7 +906,6 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     
     # Prepare data
     data = {
-        'status_color': status_color,
         'timestamp': datetime.now().strftime('%A, %B %d, %Y at %I:%M %p'),
         'missing_clock_out_count': len(missing_clock_out_df),
         'orphaned_count': len(orphaned_records_df),
