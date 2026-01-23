@@ -199,6 +199,63 @@
             white-space: nowrap;
         }
         
+        /* Mobile: Stack table as cards instead of scrolling */
+        @media only screen and (max-width: 600px) {
+            .table-wrapper {
+                overflow-x: visible;
+                margin: 15px 0 25px 0;
+            }
+            
+            table {
+                min-width: 100%;
+                border: none;
+                box-shadow: none;
+            }
+            
+            thead {
+                display: none; /* Hide table headers on mobile */
+            }
+            
+            tr {
+                display: block;
+                margin-bottom: 15px;
+                border-radius: 10px;
+                overflow: hidden;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            }
+            
+            td {
+                display: block;
+                text-align: right;
+                padding: 10px 15px;
+                border: none;
+                position: relative;
+                padding-left: 50%;
+            }
+            
+            td:before {
+                content: attr(data-label);
+                position: absolute;
+                left: 15px;
+                font-weight: 600;
+                text-align: left;
+                color: #344567;
+                text-transform: uppercase;
+                font-size: 11px;
+            }
+            
+            td:first-child {
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                background-color: #b8e6ca;
+            }
+            
+            td:last-child {
+                border-bottom-left-radius: 10px;
+                border-bottom-right-radius: 10px;
+            }
+        }
+        
         .paw-divider {
             text-align: center;
             margin: 30px 0;
@@ -260,7 +317,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <img src="https://raw.githubusercontent.com/Stratum-PR/Pet-Esthetic/main/assets/pet_esthetic_transparent.png"
+            <img src="https://raw.githubusercontent.com/Stratum-PR/Pet-Esthetic/main/assets/pet_esthetic_transparent.png" 
                  alt="Pet Esthetic">
             <h1>Reporte de Horas 🐾</h1>
             <p>{{ timestamp }}</p>
@@ -279,22 +336,26 @@
 
             <div class="table-wrapper">
                 <table>
-                    <tr>
-                        <th>Empleado</th>
-                        <th>PIN</th>
-                        <th>Entrada</th>
-                        <th>Horas</th>
-                    </tr>
+                    <thead>
+                        <tr>
+                            <th>Empleado</th>
+                            <th>PIN</th>
+                            <th>Entrada</th>
+                            <th>Horas</th>
+                        </tr>
+                    </thead>
+                    <tbody>
                     {% for record in missing_clock_out[:50] %}
                     <tr>
-                        <td class="employee-name">{{ record.employee_name or record.employee_pin or 'Desconocido' }}</td>
-                        <td>{{ record.employee_pin }}</td>
-                        <td>{{ record.clock_in }}</td>
-                        <td class="{% if record.hours_since_clock_in > 16 %}urgent-time{% else %}warning-time{% endif %}">
+                        <td data-label="Empleado" class="employee-name">{{ record.employee_name or record.employee_pin or 'Desconocido' }}</td>
+                        <td data-label="PIN">{{ record.employee_pin }}</td>
+                        <td data-label="Entrada">{{ record.clock_in }}</td>
+                        <td data-label="Horas" class="{% if record.hours_since_clock_in > 16 %}urgent-time{% else %}warning-time{% endif %}">
                             {{ "%.1f"|format(record.hours_since_clock_in) }} h
                         </td>
                     </tr>
                     {% endfor %}
+                    </tbody>
                 </table>
             </div>
 
@@ -313,26 +374,30 @@
 
             <div class="table-wrapper">
                 <table>
-                    <tr>
-                        <th>Empleado</th>
-                        <th>PIN</th>
-                        <th>Fecha</th>
-                        <th>Entrada</th>
-                        <th>Salida</th>
-                        <th>Horas</th>
-                    </tr>
+                    <thead>
+                        <tr>
+                            <th>Empleado</th>
+                            <th>PIN</th>
+                            <th>Fecha</th>
+                            <th>Entrada</th>
+                            <th>Salida</th>
+                            <th>Horas</th>
+                        </tr>
+                    </thead>
+                    <tbody>
                     {% for record in flagged_hours[:50] %}
                     <tr>
-                        <td class="employee-name">{{ record.employee_name or record.employee_pin or 'Desconocido' }}</td>
-                        <td>{{ record.employee_pin }}</td>
-                        <td>{{ record.date }}</td>
-                        <td>{{ record.clock_in_time }}</td>
-                        <td>{{ record.clock_out_time }}</td>
-                        <td class="{% if record.hours_worked > 12 %}urgent-time{% else %}warning-time{% endif %}">
+                        <td data-label="Empleado" class="employee-name">{{ record.employee_name or record.employee_pin or 'Desconocido' }}</td>
+                        <td data-label="PIN">{{ record.employee_pin }}</td>
+                        <td data-label="Fecha">{{ record.date }}</td>
+                        <td data-label="Entrada">{{ record.clock_in_time }}</td>
+                        <td data-label="Salida">{{ record.clock_out_time }}</td>
+                        <td data-label="Horas" class="{% if record.hours_worked > 12 %}urgent-time{% else %}warning-time{% endif %}">
                             {{ "%.1f"|format(record.hours_worked) }}h
                         </td>
                     </tr>
                     {% endfor %}
+                    </tbody>
                 </table>
             </div>
 
@@ -351,22 +416,26 @@
 
             <div class="table-wrapper">
                 <table>
-                    <tr>
-                        <th>Empleado</th>
-                        <th>PIN</th>
-                        <th>Fecha</th>
-                        <th>Entrada</th>
-                        <th>Salida</th>
-                    </tr>
+                    <thead>
+                        <tr>
+                            <th>Empleado</th>
+                            <th>PIN</th>
+                            <th>Fecha</th>
+                            <th>Entrada</th>
+                            <th>Salida</th>
+                        </tr>
+                    </thead>
+                    <tbody>
                     {% for record in orphaned_records[:50] %}
                     <tr>
-                        <td class="employee-name">{{ record.employee_name or record.employee_pin or 'Desconocido' }}</td>
-                        <td>{{ record.employee_pin }}</td>
-                        <td>{{ record.date }}</td>
-                        <td>{{ record.clock_in_time }}</td>
-                        <td>{{ record.clock_out_time }}</td>
+                        <td data-label="Empleado" class="employee-name">{{ record.employee_name or record.employee_pin or 'Desconocido' }}</td>
+                        <td data-label="PIN">{{ record.employee_pin }}</td>
+                        <td data-label="Fecha">{{ record.date }}</td>
+                        <td data-label="Entrada">{{ record.clock_in_time }}</td>
+                        <td data-label="Salida">{{ record.clock_out_time }}</td>
                     </tr>
                     {% endfor %}
+                    </tbody>
                 </table>
             </div>
 
@@ -385,16 +454,20 @@
 
             <div class="table-wrapper">
                 <table>
-                    <tr>
-                        <th>Problema</th>
-                        <th>Cantidad</th>
-                    </tr>
+                    <thead>
+                        <tr>
+                            <th>Problema</th>
+                            <th>Cantidad</th>
+                        </tr>
+                    </thead>
+                    <tbody>
                     {% for reason, count in failed_reasons.items() %}
                     <tr>
-                        <td>{{ reason }}</td>
-                        <td class="urgent-time">{{ count }}</td>
+                        <td data-label="Problema">{{ reason }}</td>
+                        <td data-label="Cantidad" class="urgent-time">{{ count }}</td>
                     </tr>
                     {% endfor %}
+                    </tbody>
                 </table>
             </div>
             {% endif %}
