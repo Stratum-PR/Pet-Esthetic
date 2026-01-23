@@ -290,7 +290,7 @@
             }
             
             td:before {
-                content: attr(data-label);
+                content: attr(data-label) !important;
                 position: absolute;
                 left: 15px;
                 font-weight: 600;
@@ -298,6 +298,7 @@
                 color: #344567 !important;
                 text-transform: uppercase;
                 font-size: 11px;
+                display: block !important;
             }
             
             td:first-child {

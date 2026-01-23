@@ -49,6 +49,43 @@ def normalize_datetime_for_comparison(dt_string):
         return None
 
 
+def format_datetime_for_email(dt_string):
+    """
+    Format datetime string for email display as: Jan-14, 2026 9:03 AM
+    Converts to Puerto Rico timezone first.
+    """
+    if not dt_string or pd.isna(dt_string):
+        return 'N/A'
+    
+    try:
+        dt_string = str(dt_string).strip()
+        
+        # Parse datetime
+        if dt_string.endswith('Z'):
+            clean_string = dt_string.replace('Z', '').split('.')[0]
+            dt = datetime.fromisoformat(clean_string)
+            dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+        elif '+' in dt_string or dt_string.count('-') > 2:
+            dt = datetime.fromisoformat(dt_string)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+        else:
+            clean_string = dt_string.split('.')[0]
+            dt = datetime.fromisoformat(clean_string)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+        
+        # Convert to Puerto Rico timezone
+        pr_dt = dt.astimezone(ZoneInfo('America/Puerto_Rico'))
+        
+        # Format as: Jan-14, 2026 9:03 AM
+        return pr_dt.strftime('%b-%d, %Y %I:%M %p')
+        
+    except Exception as e:
+        print(f"  ⚠️  Warning: Could not format datetime '{dt_string}': {str(e)}")
+        return str(dt_string)
+
+
 def convert_utc_to_pr(utc_datetime_string):
     """Convert UTC datetime string to Puerto Rico timezone (UTC-4)"""
     try:
@@ -198,7 +235,7 @@ def download_test_clocking_actions(config):
     df = fetch_all_records(
         config,
         "testClockingAction",
-        ["id", "employeeIdVal", "employeePin", "clockIn", "clockOut"]
+        ["id", "employeeIdVal", "employeePin", "employeeFullName", "clockIn", "clockOut"]
     )
     
     if len(df) == 0:
@@ -252,7 +289,7 @@ def check_missing_clock_out(config):
     df = fetch_all_records(
         config,
         "testClockingAction",
-        ["id", "employeeIdVal", "employeePin", "clockIn", "clockOut"]
+        ["id", "employeeIdVal", "employeePin", "employeeFullName", "clockIn", "clockOut"]
     )
     
     if len(df) == 0:
@@ -300,7 +337,9 @@ def check_missing_clock_out(config):
                     'id': row['id'],
                     'employee_id': row['employeeIdVal'],
                     'employee_pin': row['employeePin'],
+                    'employee_full_name': row.get('employeeFullName'),
                     'clock_in': clock_in_pr.strftime('%Y-%m-%d %H:%M:%S'),
+                    'clock_in_original': row['clockIn'],
                     'hours_since_clock_in': round(hours_since, 1)
                 })
         
@@ -391,6 +430,25 @@ def get_employee_pin_mapping(config):
         print("  ⚠️  WARNING: No employees found with PINs!")
     
     return id_mapping, name_mapping
+
+
+def get_employee_fullname_mapping_from_clocking(clocking_df):
+    """Create employeeFullName mapping from clocking records (preferred over employee table)"""
+    if len(clocking_df) == 0 or 'employeeFullName' not in clocking_df.columns:
+        return {}
+    
+    # Create mapping from PIN to employeeFullName, keeping the most recent non-null value
+    mapping = {}
+    for idx, row in clocking_df.iterrows():
+        pin = row.get('employeePin')
+        full_name = row.get('employeeFullName')
+        
+        if pin and pd.notna(pin) and full_name and pd.notna(full_name) and str(full_name).strip():
+            # Only update if we don't have a value yet, or if this is a newer record
+            if pin not in mapping or not mapping[pin]:
+                mapping[pin] = str(full_name).strip()
+    
+    return mapping
 
 
 def find_missing_records(clocking_df, timesheets_df):
@@ -667,59 +725,167 @@ def generate_email_report(clocking_df, timesheets_df, missing_df, created_count,
     else:
         status_color = "#28a745"
     
+    # Get employeeFullName mapping from clocking records (preferred)
+    employee_fullname_mapping = get_employee_fullname_mapping_from_clocking(clocking_df)
+    
     # Add employee names to missing clock out records
     missing_clock_out_records = []
     for record in missing_clock_out_df.to_dict('records'):
         pin = record.get('employee_pin')
-        employee_name = employee_name_mapping.get(pin)
+        
+        # Prefer employeeFullName from clocking records, fallback to employee table mapping
+        employee_name = None
+        if pin in employee_fullname_mapping:
+            employee_name = employee_fullname_mapping[pin]
+        elif pin in employee_name_mapping:
+            employee_name = employee_name_mapping[pin]
+        elif 'employee_full_name' in record and record['employee_full_name']:
+            employee_name = record['employee_full_name']
+        
         # Only set employee_name if we have a valid name (not None, not empty, not 'Unknown')
-        if employee_name and employee_name.strip() and employee_name != 'Unknown':
-            record['employee_name'] = employee_name
+        if employee_name and str(employee_name).strip() and str(employee_name) != 'Unknown':
+            record['employee_name'] = str(employee_name).strip()
         else:
             # Don't set employee_name, let template fall back to PIN
             record['employee_name'] = None
+        
+        # Format clock_in datetime
+        if 'clock_in_original' in record and record['clock_in_original']:
+            record['clock_in'] = format_datetime_for_email(record['clock_in_original'])
+        elif 'clock_in' in record and record['clock_in']:
+            record['clock_in'] = format_datetime_for_email(record['clock_in'])
+        
         missing_clock_out_records.append(record)
     
     # Add employee names and format flagged hours records
+    # Flagged hours come from missing_df which is derived from clocking_df
     flagged_hours_records = []
     for record in flagged_hours_df.to_dict('records'):
         pin = record.get('employee_pin')
-        employee_name = employee_name_mapping.get(pin)
+        
+        # Prefer employeeFullName from clocking records, fallback to employee table mapping
+        employee_name = None
+        if pin in employee_fullname_mapping:
+            employee_name = employee_fullname_mapping[pin]
+        elif pin in employee_name_mapping:
+            employee_name = employee_name_mapping[pin]
+        
         # Only set employee_name if we have a valid name (not None, not empty, not 'Unknown')
-        if employee_name and employee_name.strip() and employee_name != 'Unknown':
-            record['employee_name'] = employee_name
+        if employee_name and str(employee_name).strip() and str(employee_name) != 'Unknown':
+            record['employee_name'] = str(employee_name).strip()
         else:
             # Don't set employee_name, let template fall back to PIN
             record['employee_name'] = None
-        # Extract date and times from normalized datetimes
-        if 'clock_in' in record and record['clock_in']:
-            dt_str = str(record['clock_in'])
-            record['date'] = dt_str.split(' ')[0] if ' ' in dt_str else dt_str[:10]
-            record['clock_in_time'] = dt_str.split(' ')[1] if ' ' in dt_str else 'N/A'
-        if 'clock_out' in record and record['clock_out']:
-            dt_str = str(record['clock_out'])
-            record['clock_out_time'] = dt_str.split(' ')[1] if ' ' in dt_str else 'N/A'
+        
+        # Format datetime fields - find original clockIn/clockOut from clocking_df
+        clock_in_formatted = 'N/A'
+        clock_out_formatted = 'N/A'
+        date_formatted = 'N/A'
+        
+        if 'clock_in' in record and record['clock_in'] and pin:
+            # Try to find original clockIn from clocking_df using normalized time
+            matching_records = clocking_df[
+                (clocking_df['employeePin'].astype(str) == str(pin)) & 
+                (clocking_df['clock_in_normalized'].astype(str) == str(record['clock_in']))
+            ]
+            if len(matching_records) > 0:
+                clock_in_formatted = format_datetime_for_email(matching_records.iloc[0]['clockIn'])
+                date_formatted = clock_in_formatted.split(',')[0] if ',' in clock_in_formatted else clock_in_formatted.split(' ')[0]
+            else:
+                # Fallback: try to parse the normalized datetime
+                try:
+                    dt = datetime.strptime(str(record['clock_in']), '%Y-%m-%d %H:%M:%S')
+                    dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+                    pr_dt = dt.astimezone(ZoneInfo('America/Puerto_Rico'))
+                    clock_in_formatted = pr_dt.strftime('%b-%d, %Y %I:%M %p')
+                    date_formatted = clock_in_formatted.split(',')[0] if ',' in clock_in_formatted else clock_in_formatted.split(' ')[0]
+                except:
+                    pass
+        
+        if 'clock_out' in record and record['clock_out'] and pin:
+            # Try to find original clockOut from clocking_df using normalized time
+            matching_records = clocking_df[
+                (clocking_df['employeePin'].astype(str) == str(pin)) & 
+                (clocking_df['clock_out_normalized'].astype(str) == str(record['clock_out']))
+            ]
+            if len(matching_records) > 0:
+                clock_out_formatted = format_datetime_for_email(matching_records.iloc[0]['clockOut'])
+            else:
+                # Fallback: try to parse the normalized datetime
+                try:
+                    dt = datetime.strptime(str(record['clock_out']), '%Y-%m-%d %H:%M:%S')
+                    dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+                    pr_dt = dt.astimezone(ZoneInfo('America/Puerto_Rico'))
+                    clock_out_formatted = pr_dt.strftime('%b-%d, %Y %I:%M %p')
+                except:
+                    pass
+        
+        record['date'] = date_formatted
+        record['clock_in_time'] = clock_in_formatted
+        record['clock_out_time'] = clock_out_formatted
         flagged_hours_records.append(record)
     
     # Add employee names and format orphaned records
+    # Orphaned records come from timesheets_df, so use original clockDatetime/clockOutDatetime
     orphaned_records_list = []
     for record in orphaned_records_df.to_dict('records'):
         pin = record.get('employee_pin') or record.get('employeePin')
-        employee_name = employee_name_mapping.get(pin)
+        
+        # Prefer employeeFullName from clocking records, fallback to employee table mapping
+        employee_name = None
+        if pin in employee_fullname_mapping:
+            employee_name = employee_fullname_mapping[pin]
+        elif pin in employee_name_mapping:
+            employee_name = employee_name_mapping[pin]
+        
         # Only set employee_name if we have a valid name (not None, not empty, not 'Unknown')
-        if employee_name and employee_name.strip() and employee_name != 'Unknown':
-            record['employee_name'] = employee_name
+        if employee_name and str(employee_name).strip() and str(employee_name) != 'Unknown':
+            record['employee_name'] = str(employee_name).strip()
         else:
             # Don't set employee_name, let template fall back to PIN
             record['employee_name'] = None
-        # Extract date and times
-        if 'clock_in_normalized' in record and record['clock_in_normalized']:
-            dt_str = str(record['clock_in_normalized'])
-            record['date'] = dt_str.split(' ')[0] if ' ' in dt_str else dt_str[:10]
-            record['clock_in_time'] = dt_str.split(' ')[1] if ' ' in dt_str else 'N/A'
-        if 'clock_out_normalized' in record and record['clock_out_normalized']:
-            dt_str = str(record['clock_out_normalized'])
-            record['clock_out_time'] = dt_str.split(' ')[1] if ' ' in dt_str else 'N/A'
+        
+        # Format datetime fields - use original clockDatetime/clockOutDatetime from timesheets
+        clock_in_formatted = 'N/A'
+        clock_out_formatted = 'N/A'
+        date_formatted = 'N/A'
+        
+        # Try to get original datetimes from timesheets_df
+        if 'id' in record:
+            matching_timesheet = timesheets_df[timesheets_df['id'] == record['id']]
+            if len(matching_timesheet) > 0:
+                ts_record = matching_timesheet.iloc[0]
+                if 'clockDatetime' in ts_record and pd.notna(ts_record['clockDatetime']):
+                    clock_in_formatted = format_datetime_for_email(ts_record['clockDatetime'])
+                    date_formatted = clock_in_formatted.split(',')[0] if ',' in clock_in_formatted else clock_in_formatted.split(' ')[0]
+                if 'clockOutDatetime' in ts_record and pd.notna(ts_record['clockOutDatetime']):
+                    clock_out_formatted = format_datetime_for_email(ts_record['clockOutDatetime'])
+        
+        # Fallback: try to format normalized datetime if original not found
+        if clock_in_formatted == 'N/A' and 'clock_in_normalized' in record and record['clock_in_normalized']:
+            # Parse normalized format 'YYYY-MM-DD HH:MM:SS' and convert
+            try:
+                dt = datetime.strptime(str(record['clock_in_normalized']), '%Y-%m-%d %H:%M:%S')
+                dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+                pr_dt = dt.astimezone(ZoneInfo('America/Puerto_Rico'))
+                clock_in_formatted = pr_dt.strftime('%b-%d, %Y %I:%M %p')
+                date_formatted = clock_in_formatted.split(',')[0] if ',' in clock_in_formatted else clock_in_formatted.split(' ')[0]
+            except:
+                pass
+        
+        if clock_out_formatted == 'N/A' and 'clock_out_normalized' in record and record['clock_out_normalized']:
+            # Parse normalized format 'YYYY-MM-DD HH:MM:SS' and convert
+            try:
+                dt = datetime.strptime(str(record['clock_out_normalized']), '%Y-%m-%d %H:%M:%S')
+                dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+                pr_dt = dt.astimezone(ZoneInfo('America/Puerto_Rico'))
+                clock_out_formatted = pr_dt.strftime('%b-%d, %Y %I:%M %p')
+            except:
+                pass
+        
+        record['date'] = date_formatted
+        record['clock_in_time'] = clock_in_formatted
+        record['clock_out_time'] = clock_out_formatted
         orphaned_records_list.append(record)
     
     # Load Jinja2 template
