@@ -75,6 +75,10 @@
                     visibility: visible !important;
                     opacity: 1 !important;
                 }
+                /* Dark mode mobile labels - light color for dark background */
+                .mobile-label {
+                    color: #a0d3f2 !important;
+                }
             }
         }
         
@@ -119,6 +123,7 @@
         
         .urgent-banner, .warning-banner {
             background: linear-gradient(135deg, #f88379 0%, #fea897 100%);
+            background-color: #f88379; /* Fallback for email clients that don't support gradients */
             color: white;
             padding: 20px;
             border-radius: 15px;
@@ -131,12 +136,14 @@
             margin: 0 0 8px 0;
             font-size: 20px;
             font-weight: 600;
+            color: white;
         }
         
         .urgent-banner p, .warning-banner p {
             margin: 0;
             font-size: 14px;
             opacity: 0.95;
+            color: white;
         }
         
         .action-box {
@@ -282,7 +289,7 @@
             .mobile-label {
                 display: inline-block !important;
                 font-weight: 600;
-                color: #344567 !important;
+                color: #1a1a1a !important; /* Dark color for readability on light backgrounds */
                 text-transform: uppercase;
                 font-size: 11px;
                 letter-spacing: 0.3px;
@@ -332,6 +339,7 @@
         
         .footer {
             background: linear-gradient(135deg, #f88379 0%, #fea897 100%);
+            background-color: #f88379; /* Fallback for email clients that don't support gradients */
             padding: 25px 20px;
             text-align: center;
             color: white;
@@ -343,6 +351,11 @@
             font-size: 15px;
             display: block;
             margin-bottom: 8px;
+            color: white;
+        }
+        
+        .footer p {
+            color: white;
         }
         
         /* Desktop: hide mobile labels */
@@ -385,29 +398,46 @@
             /* Ensure footer has dark gradient background and white text on mobile */
             .footer {
                 background: linear-gradient(135deg, #f88379 0%, #fea897 100%) !important;
+                background-color: #f88379 !important; /* Fallback for email clients that don't support gradients */
+                color: white !important;
+            }
+            .footer * {
                 color: white !important;
             }
             .footer strong {
                 color: white !important;
+                font-weight: 600 !important;
             }
             .footer p {
                 color: white !important;
             }
-            /* Show mobile labels on mobile */
+            .footer a {
+                color: white !important;
+                text-decoration: underline !important;
+            }
+            /* Show mobile labels on mobile with dark, readable color */
             .mobile-label {
                 display: inline-block !important;
+                color: #1a1a1a !important; /* Dark color for readability on white background */
+                font-weight: 600 !important;
             }
             .urgent-banner, .warning-banner {
                 background: linear-gradient(135deg, #f88379 0%, #fea897 100%) !important;
+                background-color: #f88379 !important; /* Fallback for email clients that don't support gradients */
                 color: white !important;
                 margin: 15px 0 !important;
+            }
+            .urgent-banner *, .warning-banner * {
+                color: white !important;
             }
             .urgent-banner h2, .warning-banner h2 {
                 font-size: 18px;
                 color: white !important;
+                font-weight: 600 !important;
             }
             .urgent-banner p, .warning-banner p {
                 color: white !important;
+                opacity: 1 !important;
             }
             .action-box {
                 background-color: #fff5f4 !important;
