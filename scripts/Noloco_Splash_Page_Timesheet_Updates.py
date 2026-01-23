@@ -744,7 +744,23 @@ def main():
         now_pr = datetime.now(ZoneInfo('America/Puerto_Rico'))
         is_email_hour = now_pr.hour == 9
         
+        # Print email decision
+        print("\n" + "=" * 80)
+        print("EMAIL NOTIFICATION DECISION")
+        print("=" * 80)
+        print(f"Current time (Puerto Rico): {now_pr.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        print(f"Issues found: {'Yes' if has_issues else 'No'}")
+        if has_issues:
+            print(f"  - Missing clock out >8h: {len(missing_clock_out_df)}")
+            print(f"  - Orphaned records: {len(orphaned_records_df)}")
+            print(f"  - Long shifts (>8h): {len(flagged_hours_df)}")
+            print(f"  - Failed uploads: {sum(failed_reasons.values())}")
+        print(f"Email recipients configured: {'Yes' if config.email_recipients else 'No'}")
+        print(f"Current hour is 9 AM: {'Yes' if is_email_hour else 'No (currently ' + str(now_pr.hour) + ':00)'}")
+        
         if has_issues and config.email_recipients and is_email_hour:
+            print(f"\n✓ SENDING EMAIL - All conditions met")
+            print("=" * 80)
             print("\n" + "=" * 80)
             print("SENDING EMAIL REPORT (Issues Found)")
             print("=" * 80)
@@ -780,20 +796,23 @@ def main():
                     attachment_filename=f'timesheet_issues_{datetime.now().strftime("%Y%m%d")}.xlsx'
                 )
                 
-                print(f"✓ Email report sent to: {', '.join(config.email_recipients)}")
+                print(f"\n✓ Email successfully sent to: {', '.join(config.email_recipients)}")
                 
             except Exception as e:
-                print(f"✗ Failed to send email report: {str(e)}")
+                print(f"\n✗ Failed to send email report: {str(e)}")
                 print("  The sync completed successfully, but the email notification failed.")
         
         elif has_issues and not is_email_hour:
-            print(f"\n⚠️  Issues found, but it's not email time (current hour: {now_pr.hour}:00 PR time)")
-            print(f"    Email will be sent at 9:00 AM Puerto Rico time if issues persist.")
-            print(f"    Timesheet sync completed - records have been updated.")
+            print(f"\n✗ EMAIL NOT SENT - Wrong time (emails only sent at 9 AM PR time)")
+            print(f"   Next email window: Tomorrow at 9:00 AM")
+            print(f"   Timesheet sync completed successfully - records updated")
         elif has_issues and not config.email_recipients:
-            print("\n⚠️  Issues found but EMAIL_RECIPIENTS not configured. No email sent.")
+            print("\n✗ EMAIL NOT SENT - No recipients configured (EMAIL_RECIPIENTS not set)")
+            print(f"   Set EMAIL_RECIPIENTS environment variable to enable email notifications")
         else:
-            print("\n✓ No issues found - email report not needed.")
+            print("\n✓ EMAIL NOT SENT - No issues found (everything looks good!)")
+        
+        print("=" * 80)
         
         # Exit with appropriate code
         if len(missing_df) > 0 and created_count == 0:
