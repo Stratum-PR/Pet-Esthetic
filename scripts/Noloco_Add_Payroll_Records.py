@@ -378,22 +378,26 @@ def validate_no_duplicate_payroll_per_employee(
         if emp_id and period_start and period_end:
             check_key = f"{emp_id}_{period_start}_{period_end}"
             
-            # Check against existing
+            # Check against existing - but skip if this is an update operation
+            # (indicated by 'existing_payroll' key in the group)
             if check_key in employee_period_map:
-                errors.append(
-                    f"CRITICAL: Payroll record already exists for employee {emp_id} "
-                    f"and pay period {period_start} to {period_end}. "
-                    f"Existing payroll ID: {employee_period_map[check_key]}"
-                )
+                # If this group has an existing_payroll, it's an update, not a create - that's OK
+                if not group.get('existing_payroll'):
+                    errors.append(
+                        f"CRITICAL: Payroll record already exists for employee {emp_id} "
+                        f"and pay period {period_start} to {period_end}. "
+                        f"Existing payroll ID: {employee_period_map[check_key]}"
+                    )
             
-            # Check for duplicates in new records
-            if check_key in new_keys:
-                errors.append(
-                    f"CRITICAL: Multiple payroll records would be created for employee {emp_id} "
-                    f"and pay period {period_start} to {period_end}"
-                )
-            else:
-                new_keys[check_key] = key
+            # Check for duplicates in new records (only for groups without existing_payroll)
+            if not group.get('existing_payroll'):
+                if check_key in new_keys:
+                    errors.append(
+                        f"CRITICAL: Multiple payroll records would be created for employee {emp_id} "
+                        f"and pay period {period_start} to {period_end}"
+                    )
+                else:
+                    new_keys[check_key] = key
     
     return len(errors) == 0, errors
 
