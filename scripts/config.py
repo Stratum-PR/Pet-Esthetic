@@ -30,6 +30,11 @@ class Config:
     @classmethod
     def from_env(cls):
         """Load configuration from environment variables"""
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            pass
         api_token = os.getenv('NOLOCO_API_TOKEN')
         project_id = os.getenv('NOLOCO_PROJECT_ID')
         

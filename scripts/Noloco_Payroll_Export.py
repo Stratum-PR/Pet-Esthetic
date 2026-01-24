@@ -1,617 +1,496 @@
-# UPDATED create_pay_calculations_sheet function with manual commission entry
-# Replace this function in your existing payroll script
+# Noloco Payroll Export: matches "Pet Esthetic Payroll Report" format
+# Sheets: Time Entries (PAYROLL TIMESHEET), Employee Summary (BY EMPLOYEE SUMMARY), Payroll (PAY CALCULATIONS)
 
+import os
+import time
+from datetime import date, datetime, timedelta
+from itertools import groupby
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+import pandas as pd
+import requests
+from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.drawing.image import Image
 
-def create_pay_calculations_sheet(wb, df, styles, company_name, period_text, hourly_rate=None, min_wage_rate=10.50):
-    """
-    Sheet 3: Pay calculations with MANUAL commission and hourly rate entry
-    
-    Features:
-    - Gray highlighted column for MANUAL commission entry
-    - Gray highlighted column for MANUAL hourly rate entry (editable for raises/changes)
-    - Empty hourly rates are pre-filled with minimum wage ($10.50 in Puerto Rico)
-    - Automatic minimum wage guarantee calculation
-    - Formula automatically pays MAX(commission, minimum_wage) for commission employees
-    - Standard hourly pay for hourly employees
-    - Payment type indicator showing how each employee was paid
-    
-    Args:
-        wb: Workbook object
-        df: DataFrame with timesheet data
-        styles: Dictionary of cell styles
-        company_name: Company name for header
-        period_text: Pay period text
-        hourly_rate: Default hourly rate if not in user data (pre-fills the editable field)
-        min_wage_rate: Minimum wage rate (default $10.50 for Puerto Rico as of 2024)
-    """
-    ws = wb.create_sheet("Payroll")
-    current_row = 1
-    
-    # Title
-    ws[f'A{current_row}'] = f"{company_name} - PAY CALCULATIONS" if company_name else "PAY CALCULATIONS"
-    ws[f'A{current_row}'].font = styles['title_font']
-    current_row += 1
-    
-    # Period
-    ws[f'A{current_row}'] = f"Pay Period: {period_text}"
-    ws[f'A{current_row}'].font = Font(bold=True, size=11)
-    current_row += 2
-    
-    # Min Wage Rate Display (so users know what it is)
-    ws[f'A{current_row}'] = f"Current Minimum Wage Rate: ${min_wage_rate:.2f}/hour (Puerto Rico)"
-    ws[f'A{current_row}'].font = Font(bold=True, size=10, color="0000FF")
-    current_row += 2
-    
-    # Instructions (highlighted in red for visibility)
-    ws[f'A{current_row}'] = "INSTRUCTIONS:"
-    ws[f'A{current_row}'].font = Font(bold=True, size=11, color="FF0000")
-    current_row += 1
-    
-    ws[f'A{current_row}'] = "1. GRAY columns are EDITABLE - Update hourly rates if employee got a raise"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 1
-    
-    ws[f'A{current_row}'] = "2. For COMMISSION employees: Enter total commission $ in the gray 'Commission $' column"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 1
-    
-    ws[f'A{current_row}'] = f"3. System compares commission vs minimum wage guarantee (${min_wage_rate}/hr × hours worked)"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 1
-    
-    ws[f'A{current_row}'] = "4. Commission employees receive whichever is HIGHER (commission or minimum wage)"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 1
-    
-    ws[f'A{current_row}'] = "5. HOURLY employees are paid: Hours × Hourly Rate (commission column is ignored)"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 1
-    
-    ws[f'A{current_row}'] = "6. All calculations update automatically when you change rates or commission amounts"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 2
-    
-    # Headers
-    headers = [
-        'Employee ID', 
-        'Employee Name', 
-        'Employee Type',
-        'Total Hours', 
-        'Hourly Rate',
-        'Commission $',
-        'Min Wage\nGuarantee',
-        'Gross Pay',
-        'Payment Type'
-    ]
-    
-    for col_num, header in enumerate(headers, 1):
-        cell = ws.cell(row=current_row, column=col_num)
-        cell.value = header
-        cell.font = styles['header_font']
-        cell.fill = styles['header_fill']
-        cell.alignment = Alignment(horizontal='center', wrap_text=True, vertical='center')
-        cell.border = styles['border']
-    
-    current_row += 1
-    start_data_row = current_row
-    
-    # Column references
-    employee_col = 'employeeIdVal' if 'employeeIdVal' in df.columns else 'id'
-    name_col = 'users_fullName' if 'users_fullName' in df.columns else 'Unknown'
-    pay_rate_col = 'users_payRate' if 'users_payRate' in df.columns else None
-    employee_type_col = 'users_employeeType' if 'users_employeeType' in df.columns else None
-    
-    # Process each employee
-    for employee_id in df[employee_col].unique():
-        employee_df = df[df[employee_col] == employee_id]
-        employee_name = employee_df[name_col].iloc[0] if name_col in df.columns else 'Unknown'
-        total_hours = employee_df['shiftHoursWorked'].sum() if 'shiftHoursWorked' in df.columns else 0
-        
-        # Get employee type (default to Hourly if not specified)
-        if employee_type_col and employee_type_col in df.columns and pd.notna(employee_df[employee_type_col].iloc[0]):
-            employee_type = str(employee_df[employee_type_col].iloc[0])
-        else:
-            employee_type = 'Hourly'  # Default assumption
-        
-        # Get hourly rate (this will PRE-FILL the editable field)
-        # IF EMPTY OR MISSING, USE MINIMUM WAGE RATE
-        if pay_rate_col and pay_rate_col in df.columns and pd.notna(employee_df[pay_rate_col].iloc[0]):
-            rate_value = employee_df[pay_rate_col].iloc[0]
-            # Check if rate is a valid number and greater than 0
-            if rate_value and float(rate_value) > 0:
-                employee_rate = float(rate_value)
-            else:
-                employee_rate = min_wage_rate  # Use minimum wage if empty/zero
-        elif hourly_rate and hourly_rate > 0:
-            employee_rate = hourly_rate
-        else:
-            employee_rate = min_wage_rate  # Default to minimum wage
-        
-        col = 1
-        
-        # Employee ID
-        ws.cell(row=current_row, column=col).value = employee_id
-        ws.cell(row=current_row, column=col).border = styles['border']
-        ws.cell(row=current_row, column=col).alignment = Alignment(horizontal='center')
-        col += 1
-        
-        # Employee Name
-        ws.cell(row=current_row, column=col).value = employee_name
-        ws.cell(row=current_row, column=col).border = styles['border']
-        col += 1
-        
-        # Employee Type
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = employee_type
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='center')
-        # Color code: Commission employees get yellow background
-        if 'commission' in employee_type.lower() or 'comision' in employee_type.lower():
-            cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-        type_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # Total Hours
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = total_hours
-        cell.number_format = '0.00' if total_hours > 0 else '0'
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='center')
-        hours_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # *** HOURLY RATE - EDITABLE! (pre-filled with minimum wage if empty) ***
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = employee_rate  # Pre-fill with rate (or min wage if empty)
-        cell.number_format = '$#,##0.00'
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='center')
-        # GRAY background indicates this is EDITABLE
-        cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-        rate_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # *** COMMISSION $ - MANUAL ENTRY FIELD (editable) ***
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = None  # Leave blank for manual entry
-        cell.number_format = '$#,##0.00'
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='right')
-        # GRAY background indicates this is an EDITABLE field
-        cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-        commission_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # Minimum Wage Guarantee (automatic calculation: hours × min_wage_rate)
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = f'={hours_cell}*{min_wage_rate}'
-        cell.number_format = '$#,##0.00'
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='right')
-        min_wage_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # Gross Pay - AUTOMATIC FORMULA with commission logic
-        # NOW USES THE EDITABLE RATE CELL!
-        cell = ws.cell(row=current_row, column=col)
-        
-        # Excel formula logic:
-        # IF employee type contains "commission" or "comision":
-        #   IF commission is entered AND > 0:
-        #     Pay MAX(commission, min_wage_guarantee)
-        #   ELSE:
-        #     Pay min_wage_guarantee (safety net)
-        # ELSE (hourly employee):
-        #   Pay hours × rate (NOW USES EDITABLE RATE!)
-        
-        cell.value = (
-            f'=IF(OR(ISNUMBER(SEARCH("commission",LOWER({type_cell}))),ISNUMBER(SEARCH("comision",LOWER({type_cell})))),'
-            f'IF(AND(ISNUMBER({commission_cell}),{commission_cell}>0),'
-            f'MAX({commission_cell},{min_wage_cell}),'
-            f'{min_wage_cell}),'
-            f'{hours_cell}*{rate_cell})'  # Uses the editable rate cell!
-        )
-        
-        cell.number_format = '$#,##0.00'
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='right')
-        cell.font = Font(bold=True)
-        gross_pay_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # Payment Type (shows HOW employee was paid)
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = (
-            f'=IF(OR(ISNUMBER(SEARCH("commission",LOWER({type_cell}))),ISNUMBER(SEARCH("comision",LOWER({type_cell})))),'
-            f'IF(AND(ISNUMBER({commission_cell}),{commission_cell}>0),'
-            f'IF({commission_cell}>{min_wage_cell},"Commission","Hourly (Min Wage)"),'
-            f'"Hourly (Min Wage)"),'
-            f'"Hourly")'
-        )
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='center')
-        cell.font = Font(size=9)
-        
-        current_row += 1
-    
-    # Set column widths for readability
-    ws.column_dimensions['A'].width = 12   # Employee ID
-    ws.column_dimensions['B'].width = 25   # Name
-    ws.column_dimensions['C'].width = 15   # Type
-    ws.column_dimensions['D'].width = 12   # Hours
-    ws.column_dimensions['E'].width = 12   # Hourly Rate (editable)
-    ws.column_dimensions['F'].width = 14   # Commission (editable)
-    ws.column_dimensions['G'].width = 12   # Min Wage
-    ws.column_dimensions['H'].width = 12   # Gross Pay
-    ws.column_dimensions['I'].width = 20   # Payment Type
-    
-    # TOTALS ROW
-    current_row += 1
-    ws[f'A{current_row}'] = "TOTALS"
-    ws[f'A{current_row}'].font = Font(bold=True, size=11)
-    ws.merge_cells(f'A{current_row}:B{current_row}')
-    
-    # Total Hours (column D)
-    cell = ws.cell(row=current_row, column=4)
-    cell.value = f'=SUM(D{start_data_row}:D{current_row-2})'
+
+def _format_date(d):
+    """Format date or YYYY-MM-DD string as MM/DD/YYYY."""
+    if d is None:
+        return ""
+    if isinstance(d, str):
+        d = datetime.strptime((d or "")[:10], "%Y-%m-%d").date()
+    return d.strftime("%m/%d/%Y")
+
+
+def _format_time(iso_str):
+    """Format ISO datetime string as 12h time (e.g. 05:00 PM)."""
+    if not iso_str:
+        return ""
+    try:
+        s = str(iso_str).replace("Z", "+00:00").split(".")[0]
+        dt = datetime.fromisoformat(s)
+        return dt.strftime("%I:%M %p")
+    except Exception:
+        return ""
+
+
+def _format_period(period):
+    """Format period dict as 'December 07 - December 18, 2025'."""
+    start = datetime.strptime(period["start_date"], "%Y-%m-%d").date()
+    end = datetime.strptime(period["end_date"], "%Y-%m-%d").date()
+    return f"{start.strftime('%B %d')} - {end.strftime('%B %d')}, {end.year}"
+
+
+def _format_generated():
+    """Format current time as 'December 17, 2025 at 05:16 PM'."""
+    return datetime.now().strftime("%B %d, %Y at %I:%M %p")
+
+
+_WHITE_FILL = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+
+def _add_logo_header(ws, logo_path):
+    """Add Pet Esthetic logo at A1 as sheet header. Returns True if added (content starts row 2), else False (row 1).
+    Size and row 1 height match the Time Entries tab setup (247×72 px, row 1 = 74.25 pt). Applied to all tabs.
+    Cells A1:D1 are filled white behind the logo."""
+    if logo_path and os.path.exists(logo_path):
+        try:
+            img = Image(logo_path)
+            # Matches Time Entries: 247×72 px (~3.4:1), row 1 = 74.25 pt
+            img.width = 247
+            img.height = 72
+            ws.add_image(img, "A1")
+            ws.row_dimensions[1].height = 74.25
+            for col in ["A", "B", "C", "D"]:
+                ws[f"{col}1"].fill = _WHITE_FILL
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def create_time_entries_sheet(wb, company, period_formatted, generated_str, time_entry_rows, styles, logo_path=None):
+    """Sheet 1: Time Entries (PAYROLL TIMESHEET). One row per timesheet."""
+    ws = wb.create_sheet("Time Entries")
+    r = 2 if _add_logo_header(ws, logo_path) else 1
+    ws[f"A{r}"] = f"{company} - PAYROLL TIMESHEET"
+    ws[f"A{r}"].font = styles["title_font"]
+    r += 1
+    ws[f"A{r}"] = f"Pay Period: {period_formatted}"
+    ws[f"A{r}"].font = Font(bold=True, size=11)
+    r += 1
+    ws[f"A{r}"] = f"Generated: {generated_str}"
+    ws[f"A{r}"].font = Font(size=10)
+    r += 2
+    headers = ["Employee ID", "Employee Name", "Date", "Clock In", "Clock Out", "Hours", "Status", "Period Start", "Period End"]
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(row=r, column=c)
+        cell.value = h
+        cell.font = styles["header_font"]
+        cell.fill = styles["header_fill"]
+        cell.alignment = Alignment(horizontal="center", wrap_text=True, vertical="center")
+        cell.border = styles["border"]
+    r += 1
+    start_data = r
+    for row in time_entry_rows:
+        ws.cell(row=r, column=1).value = row.get("employeeIdVal", "")
+        ws.cell(row=r, column=2).value = row.get("employeeName", "")
+        ws.cell(row=r, column=3).value = row.get("date", "")
+        ws.cell(row=r, column=4).value = row.get("clockIn", "")
+        ws.cell(row=r, column=5).value = row.get("clockOut", "")
+        cell = ws.cell(row=r, column=6)
+        cell.value = row.get("hours", 0)
+        cell.number_format = "0.00"
+        ws.cell(row=r, column=7).value = row.get("status", "")
+        ws.cell(row=r, column=8).value = row.get("periodStart", "")
+        ws.cell(row=r, column=9).value = row.get("periodEnd", "")
+        r += 1
+    r += 1
+    ws[f"A{r}"] = "TOTAL"
+    ws[f"A{r}"].font = Font(bold=True, size=11)
+    cell = ws.cell(row=r, column=6)
+    cell.value = f"=SUM(F{start_data}:F{r-2})" if (r - 2) >= start_data else 0
     cell.font = Font(bold=True)
-    cell.number_format = '0.00'
-    cell.border = Border(top=Side(style='double'), bottom=Side(style='double'))
-    cell.alignment = Alignment(horizontal='center')
-    
-    # Total Commission (column F)
-    cell = ws.cell(row=current_row, column=6)
-    cell.value = f'=SUMIF(F{start_data_row}:F{current_row-2},">0")'
-    cell.font = Font(bold=True)
-    cell.number_format = '$#,##0.00'
-    cell.border = Border(top=Side(style='double'), bottom=Side(style='double'))
-    cell.alignment = Alignment(horizontal='right')
-    
-    # Total Gross Pay (column H)
-    cell = ws.cell(row=current_row, column=8)
-    cell.value = f'=SUM(H{start_data_row}:H{current_row-2})'
-    cell.font = Font(bold=True)
-    cell.number_format = '$#,##0.00'
-    cell.border = Border(top=Side(style='double'), bottom=Side(style='double'))
-    cell.alignment = Alignment(horizontal='right')
-    
-    # PAYMENT SUMMARY SECTION
-    current_row += 3
-    ws[f'A{current_row}'] = "PAYMENT SUMMARY"
-    ws[f'A{current_row}'].font = Font(bold=True, size=11, underline='single')
-    current_row += 1
-    
-    # Count employees paid by commission
-    ws[f'A{current_row}'] = "Employees paid by commission:"
-    ws[f'A{current_row}'].font = Font(size=10)
-    cell = ws.cell(row=current_row, column=2)
-    cell.value = f'=COUNTIF(I{start_data_row}:I{current_row-5},"Commission")'
-    cell.font = Font(bold=True, size=10)
-    current_row += 1
-    
-    # Count commission employees who got min wage instead
-    ws[f'A{current_row}'] = "Commission employees paid min wage:"
-    ws[f'A{current_row}'].font = Font(size=10)
-    cell = ws.cell(row=current_row, column=2)
-    cell.value = f'=COUNTIF(I{start_data_row}:I{current_row-6},"Hourly (Min Wage)")'
-    cell.font = Font(bold=True, size=10)
-    current_row += 1
-    
-    # Count hourly employees
-    ws[f'A{current_row}'] = "Hourly employees:"
-    ws[f'A{current_row}'].font = Font(size=10)
-    cell = ws.cell(row=current_row, column=2)
-    cell.value = f'=COUNTIF(I{start_data_row}:I{current_row-7},"Hourly")'
-    cell.font = Font(bold=True, size=10)
-    
-    return ws
-    """
-    Sheet 3: Pay calculations with MANUAL commission and hourly rate entry
-    
-    Features:
-    - Gray highlighted column for MANUAL commission entry
-    - Gray highlighted column for MANUAL hourly rate entry (editable for raises/changes)
-    - Automatic minimum wage guarantee calculation
-    - Formula automatically pays MAX(commission, minimum_wage) for commission employees
-    - Standard hourly pay for hourly employees
-    - Payment type indicator showing how each employee was paid
-    
-    Args:
-        wb: Workbook object
-        df: DataFrame with timesheet data
-        styles: Dictionary of cell styles
-        company_name: Company name for header
-        period_text: Pay period text
-        hourly_rate: Default hourly rate if not in user data (pre-fills the editable field)
-        min_wage_rate: Minimum wage rate (default $8.50 for Puerto Rico)
-    """
-    ws = wb.create_sheet("Payroll")
-    current_row = 1
-    
-    # Title
-    ws[f'A{current_row}'] = f"{company_name} - PAY CALCULATIONS" if company_name else "PAY CALCULATIONS"
-    ws[f'A{current_row}'].font = styles['title_font']
-    current_row += 1
-    
-    # Period
-    ws[f'A{current_row}'] = f"Pay Period: {period_text}"
-    ws[f'A{current_row}'].font = Font(bold=True, size=11)
-    current_row += 2
-    
-    # Min Wage Rate Display (so users know what it is)
-    ws[f'A{current_row}'] = f"Current Minimum Wage Rate: ${min_wage_rate:.2f}/hour"
-    ws[f'A{current_row}'].font = Font(bold=True, size=10, color="0000FF")
-    current_row += 2
-    
-    # Instructions (highlighted in red for visibility)
-    ws[f'A{current_row}'] = "INSTRUCTIONS:"
-    ws[f'A{current_row}'].font = Font(bold=True, size=11, color="FF0000")
-    current_row += 1
-    
-    ws[f'A{current_row}'] = "1. GRAY columns are EDITABLE - Update hourly rates if employee got a raise"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 1
-    
-    ws[f'A{current_row}'] = "2. For COMMISSION employees: Enter total commission $ in the gray 'Commission $' column"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 1
-    
-    ws[f'A{current_row}'] = f"3. System compares commission vs minimum wage guarantee (${min_wage_rate}/hr × hours worked)"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 1
-    
-    ws[f'A{current_row}'] = "4. Commission employees receive whichever is HIGHER (commission or minimum wage)"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 1
-    
-    ws[f'A{current_row}'] = "5. HOURLY employees are paid: Hours × Hourly Rate (commission column is ignored)"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 1
-    
-    ws[f'A{current_row}'] = "6. All calculations update automatically when you change rates or commission amounts"
-    ws[f'A{current_row}'].font = Font(italic=True, size=9)
-    current_row += 2
-    
-    # Headers
-    headers = [
-        'Employee ID', 
-        'Employee Name', 
-        'Employee Type',
-        'Total Hours', 
-        'Hourly Rate',
-        'Commission $',
-        'Min Wage\nGuarantee',
-        'Gross Pay',
-        'Payment Type'
-    ]
-    
-    for col_num, header in enumerate(headers, 1):
-        cell = ws.cell(row=current_row, column=col_num)
-        cell.value = header
-        cell.font = styles['header_font']
-        cell.fill = styles['header_fill']
-        cell.alignment = Alignment(horizontal='center', wrap_text=True, vertical='center')
-        cell.border = styles['border']
-    
-    current_row += 1
-    start_data_row = current_row
-    
-    # Column references
-    employee_col = 'employeeIdVal' if 'employeeIdVal' in df.columns else 'id'
-    name_col = 'users_fullName' if 'users_fullName' in df.columns else 'Unknown'
-    pay_rate_col = 'users_payRate' if 'users_payRate' in df.columns else None
-    employee_type_col = 'users_employeeType' if 'users_employeeType' in df.columns else None
-    
-    # Process each employee
-    for employee_id in df[employee_col].unique():
-        employee_df = df[df[employee_col] == employee_id]
-        employee_name = employee_df[name_col].iloc[0] if name_col in df.columns else 'Unknown'
-        total_hours = employee_df['shiftHoursWorked'].sum() if 'shiftHoursWorked' in df.columns else 0
-        
-        # Get employee type (default to Hourly if not specified)
-        if employee_type_col and employee_type_col in df.columns and pd.notna(employee_df[employee_type_col].iloc[0]):
-            employee_type = str(employee_df[employee_type_col].iloc[0])
-        else:
-            employee_type = 'Hourly'  # Default assumption
-        
-        # Get hourly rate (this will PRE-FILL the editable field)
-        if pay_rate_col and pay_rate_col in df.columns and pd.notna(employee_df[pay_rate_col].iloc[0]):
-            employee_rate = float(employee_df[pay_rate_col].iloc[0])
-        elif hourly_rate:
-            employee_rate = hourly_rate
-        else:
-            employee_rate = min_wage_rate  # Default to minimum wage
-        
-        col = 1
-        
-        # Employee ID
-        ws.cell(row=current_row, column=col).value = employee_id
-        ws.cell(row=current_row, column=col).border = styles['border']
-        ws.cell(row=current_row, column=col).alignment = Alignment(horizontal='center')
-        col += 1
-        
-        # Employee Name
-        ws.cell(row=current_row, column=col).value = employee_name
-        ws.cell(row=current_row, column=col).border = styles['border']
-        col += 1
-        
-        # Employee Type
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = employee_type
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='center')
-        # Color code: Commission employees get yellow background
-        if 'commission' in employee_type.lower() or 'comision' in employee_type.lower():
-            cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-        type_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # Total Hours
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = total_hours
-        cell.number_format = '0.00' if total_hours > 0 else '0'
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='center')
-        hours_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # *** HOURLY RATE - NOW EDITABLE! (pre-filled with value from Noloco) ***
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = employee_rate  # Pre-fill with current rate
-        cell.number_format = '$#,##0.00'
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='center')
-        # GRAY background indicates this is EDITABLE
-        cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-        rate_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # *** COMMISSION $ - MANUAL ENTRY FIELD (editable) ***
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = None  # Leave blank for manual entry
-        cell.number_format = '$#,##0.00'
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='right')
-        # GRAY background indicates this is an EDITABLE field
-        cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-        commission_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # Minimum Wage Guarantee (automatic calculation: hours × min_wage_rate)
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = f'={hours_cell}*{min_wage_rate}'
-        cell.number_format = '$#,##0.00'
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='right')
-        min_wage_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # Gross Pay - AUTOMATIC FORMULA with commission logic
-        # NOW USES THE EDITABLE RATE CELL!
-        cell = ws.cell(row=current_row, column=col)
-        
-        # Excel formula logic:
-        # IF employee type contains "commission" or "comision":
-        #   IF commission is entered AND > 0:
-        #     Pay MAX(commission, min_wage_guarantee)
-        #   ELSE:
-        #     Pay min_wage_guarantee (safety net)
-        # ELSE (hourly employee):
-        #   Pay hours × rate (NOW USES EDITABLE RATE!)
-        
-        cell.value = (
-            f'=IF(OR(ISNUMBER(SEARCH("commission",LOWER({type_cell}))),ISNUMBER(SEARCH("comision",LOWER({type_cell})))),'
-            f'IF(AND(ISNUMBER({commission_cell}),{commission_cell}>0),'
-            f'MAX({commission_cell},{min_wage_cell}),'
-            f'{min_wage_cell}),'
-            f'{hours_cell}*{rate_cell})'  # Uses the editable rate cell!
-        )
-        
-        cell.number_format = '$#,##0.00'
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='right')
-        cell.font = Font(bold=True)
-        gross_pay_cell = f'{get_column_letter(col)}{current_row}'
-        col += 1
-        
-        # Payment Type (shows HOW employee was paid)
-        cell = ws.cell(row=current_row, column=col)
-        cell.value = (
-            f'=IF(OR(ISNUMBER(SEARCH("commission",LOWER({type_cell}))),ISNUMBER(SEARCH("comision",LOWER({type_cell})))),'
-            f'IF(AND(ISNUMBER({commission_cell}),{commission_cell}>0),'
-            f'IF({commission_cell}>{min_wage_cell},"Commission","Hourly (Min Wage)"),'
-            f'"Hourly (Min Wage)"),'
-            f'"Hourly")'
-        )
-        cell.border = styles['border']
-        cell.alignment = Alignment(horizontal='center')
-        cell.font = Font(size=9)
-        
-        current_row += 1
-    
-    # Set column widths for readability
-    ws.column_dimensions['A'].width = 12   # Employee ID
-    ws.column_dimensions['B'].width = 25   # Name
-    ws.column_dimensions['C'].width = 15   # Type
-    ws.column_dimensions['D'].width = 12   # Hours
-    ws.column_dimensions['E'].width = 12   # Hourly Rate (editable)
-    ws.column_dimensions['F'].width = 14   # Commission (editable)
-    ws.column_dimensions['G'].width = 12   # Min Wage
-    ws.column_dimensions['H'].width = 12   # Gross Pay
-    ws.column_dimensions['I'].width = 20   # Payment Type
-    
-    # TOTALS ROW
-    current_row += 1
-    ws[f'A{current_row}'] = "TOTALS"
-    ws[f'A{current_row}'].font = Font(bold=True, size=11)
-    ws.merge_cells(f'A{current_row}:B{current_row}')
-    
-    # Total Hours (column D)
-    cell = ws.cell(row=current_row, column=4)
-    cell.value = f'=SUM(D{start_data_row}:D{current_row-2})'
-    cell.font = Font(bold=True)
-    cell.number_format = '0.00'
-    cell.border = Border(top=Side(style='double'), bottom=Side(style='double'))
-    cell.alignment = Alignment(horizontal='center')
-    
-    # Total Commission (column F)
-    cell = ws.cell(row=current_row, column=6)
-    cell.value = f'=SUMIF(F{start_data_row}:F{current_row-2},">0")'
-    cell.font = Font(bold=True)
-    cell.number_format = '$#,##0.00'
-    cell.border = Border(top=Side(style='double'), bottom=Side(style='double'))
-    cell.alignment = Alignment(horizontal='right')
-    
-    # Total Gross Pay (column H)
-    cell = ws.cell(row=current_row, column=8)
-    cell.value = f'=SUM(H{start_data_row}:H{current_row-2})'
-    cell.font = Font(bold=True)
-    cell.number_format = '$#,##0.00'
-    cell.border = Border(top=Side(style='double'), bottom=Side(style='double'))
-    cell.alignment = Alignment(horizontal='right')
-    
-    # PAYMENT SUMMARY SECTION
-    current_row += 3
-    ws[f'A{current_row}'] = "PAYMENT SUMMARY"
-    ws[f'A{current_row}'].font = Font(bold=True, size=11, underline='single')
-    current_row += 1
-    
-    # Count employees paid by commission
-    ws[f'A{current_row}'] = "Employees paid by commission:"
-    ws[f'A{current_row}'].font = Font(size=10)
-    cell = ws.cell(row=current_row, column=2)
-    cell.value = f'=COUNTIF(I{start_data_row}:I{current_row-5},"Commission")'
-    cell.font = Font(bold=True, size=10)
-    current_row += 1
-    
-    # Count commission employees who got min wage instead
-    ws[f'A{current_row}'] = "Commission employees paid min wage:"
-    ws[f'A{current_row}'].font = Font(size=10)
-    cell = ws.cell(row=current_row, column=2)
-    cell.value = f'=COUNTIF(I{start_data_row}:I{current_row-6},"Hourly (Min Wage)")'
-    cell.font = Font(bold=True, size=10)
-    current_row += 1
-    
-    # Count hourly employees
-    ws[f'A{current_row}'] = "Hourly employees:"
-    ws[f'A{current_row}'].font = Font(size=10)
-    cell = ws.cell(row=current_row, column=2)
-    cell.value = f'=COUNTIF(I{start_data_row}:I{current_row-7},"Hourly")'
-    cell.font = Font(bold=True, size=10)
-    
+    cell.number_format = "0.00"
+    for col, w in [("A", 12), ("B", 22), ("C", 12), ("D", 10), ("E", 10), ("F", 8), ("G", 10), ("H", 12), ("I", 12)]:
+        ws.column_dimensions[col].width = w
     return ws
 
 
-# USAGE EXAMPLE:
-# In your main payroll script, call this function like:
-create_pay_calculations_sheet(
-    wb=wb, 
-    df=df, 
-    styles=styles, 
-    company_name="Pet Esthetic",
-    period_text=period_text,
-    hourly_rate=None,  # Will use rates from user profiles
-    min_wage_rate=10.50  # Puerto Rico minimum wage
-    )
+def create_employee_summary_sheet(wb, company, period_formatted, time_entry_rows, styles, logo_path=None):
+    """Sheet 2: Employee Summary (BY EMPLOYEE SUMMARY). One block per employee."""
+    ws = wb.create_sheet("Employee Summary")
+    r = 2 if _add_logo_header(ws, logo_path) else 1
+    ws[f"A{r}"] = f"{company} - BY EMPLOYEE SUMMARY"
+    ws[f"A{r}"].font = styles["title_font"]
+    r += 1
+    ws[f"A{r}"] = f"Pay Period: {period_formatted}"
+    ws[f"A{r}"].font = Font(bold=True, size=11)
+    r += 2
+    key_fn = lambda x: (x.get("employeeIdVal"), x.get("employeeName", ""))
+    sorted_rows = sorted(time_entry_rows, key=key_fn)
+    for (eid, ename), rows in groupby(sorted_rows, key=key_fn):
+        ws[f"A{r}"] = f"Employee: {ename} (ID: {eid})"
+        ws[f"A{r}"].font = Font(bold=True, size=11)
+        r += 1
+        headers = ["Date", "Clock In", "Clock Out", "Hours", "Status"]
+        for c, h in enumerate(headers, 1):
+            cell = ws.cell(row=r, column=c)
+            cell.value = h
+            cell.font = styles["header_font"]
+            cell.fill = styles["header_fill"]
+            cell.alignment = Alignment(horizontal="center", wrap_text=True, vertical="center")
+            cell.border = styles["border"]
+        r += 1
+        first_data = r
+        for row in rows:
+            ws.cell(row=r, column=1).value = row.get("date", "")
+            ws.cell(row=r, column=2).value = row.get("clockIn", "")
+            ws.cell(row=r, column=3).value = row.get("clockOut", "")
+            cell = ws.cell(row=r, column=4)
+            cell.value = row.get("hours", 0)
+            cell.number_format = "0.00"
+            ws.cell(row=r, column=5).value = row.get("status", "")
+            r += 1
+        ws[f"A{r}"] = f"Subtotal - {ename}"
+        ws[f"A{r}"].font = Font(bold=True, size=10)
+        cell = ws.cell(row=r, column=4)
+        cell.value = f"=SUM(D{first_data}:D{r-1})" if (r - 1) >= first_data else 0
+        cell.font = Font(bold=True)
+        cell.number_format = "0.00"
+        r += 2
+    for col, w in [("A", 14), ("B", 10), ("C", 10), ("D", 8), ("E", 10)]:
+        ws.column_dimensions[col].width = w
+    return ws
+
+
+def create_payroll_sheet(wb, df_agg, company, period_formatted, styles, logo_path=None):
+    """Sheet 3: Payroll (PAY CALCULATIONS). Employee ID, Name, Total Hours, Hourly Rate (editable), Gross Pay, Commission % (editable), Sales Volume, Commission Pay."""
+    ws = wb.create_sheet("Payroll")
+    r = 2 if _add_logo_header(ws, logo_path) else 1
+    ws[f"A{r}"] = f"{company} - PAY CALCULATIONS"
+    ws[f"A{r}"].font = styles["title_font"]
+    r += 1
+    ws[f"A{r}"] = f"Pay Period: {period_formatted}"
+    ws[f"A{r}"].font = Font(bold=True, size=11)
+    r += 2
+    ws[f"A{r}"] = "Note: Pay rates and Commission % are editable. Gross Pay = Hours x Rate. Commission Pay = Commission % x Sales Volume."
+    ws[f"A{r}"].font = Font(italic=True, size=10)
+    r += 2
+    headers = ["Employee ID", "Employee Name", "Total Hours", "Hourly Rate", "Gross Pay", "Commission %", "Sales Volume", "Commission Pay"]
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(row=r, column=c)
+        cell.value = h
+        cell.font = styles["header_font"]
+        cell.fill = styles["header_fill"]
+        cell.alignment = Alignment(horizontal="center", wrap_text=True, vertical="center")
+        cell.border = styles["border"]
+    r += 1
+    start_data = r
+    for _, rec in df_agg.iterrows():
+        eid = rec.get("employeeIdVal", "")
+        name = rec.get("users_fullName", "Unknown")
+        hours = float(rec.get("shiftHoursWorked") or 0)
+        rate_val = rec.get("users_payRate")
+        try:
+            rate = float(rate_val) if rate_val is not None and str(rate_val).strip() != "" else 0.0
+        except (ValueError, TypeError):
+            rate = 0.0
+        ws.cell(row=r, column=1).value = eid
+        ws.cell(row=r, column=2).value = name
+        cell = ws.cell(row=r, column=3)
+        cell.value = hours
+        cell.number_format = "0.00"
+        cell = ws.cell(row=r, column=4)
+        cell.value = rate if rate else None
+        cell.number_format = "0.00"
+        cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        cell = ws.cell(row=r, column=5)
+        cell.value = f"=C{r}*D{r}"
+        cell.number_format = "$#,##0.00"
+        cell.font = Font(bold=True)
+        # Commission % (editable, gray), Sales Volume (user entry), Commission Pay = F*G
+        cell = ws.cell(row=r, column=6)
+        cell.value = None
+        cell.number_format = "0.00%"
+        cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        cell = ws.cell(row=r, column=7)
+        cell.value = None
+        cell.number_format = "#,##0.00"
+        cell = ws.cell(row=r, column=8)
+        cell.value = f"=F{r}*G{r}"
+        cell.number_format = "$#,##0.00"
+        cell.font = Font(bold=True)
+        r += 1
+    r += 1
+    ws[f"A{r}"] = "TOTALS"
+    ws[f"A{r}"].font = Font(bold=True, size=11)
+    cell = ws.cell(row=r, column=3)
+    cell.value = f"=SUM(C{start_data}:C{r-2})" if (r - 2) >= start_data else 0
+    cell.font = Font(bold=True)
+    cell.number_format = "0.00"
+    cell = ws.cell(row=r, column=5)
+    cell.value = f"=SUM(E{start_data}:E{r-2})" if (r - 2) >= start_data else 0
+    cell.font = Font(bold=True)
+    cell.number_format = "$#,##0.00"
+    cell = ws.cell(row=r, column=8)
+    cell.value = f"=SUM(H{start_data}:H{r-2})" if (r - 2) >= start_data else 0
+    cell.font = Font(bold=True)
+    cell.number_format = "$#,##0.00"
+    for col, w in [("A", 12), ("B", 25), ("C", 12), ("D", 12), ("E", 12), ("F", 12), ("G", 14), ("H", 14)]:
+        ws.column_dimensions[col].width = w
+    return ws
+
+
+
+
+# =============================================================================
+# CONFIGURATION & API (for run when executed as script)
+# =============================================================================
+
+API_TOKEN = os.getenv("NOLOCO_API_TOKEN")
+PROJECT_ID = os.getenv("NOLOCO_PROJECT_ID")
+
+if not API_TOKEN or not str(API_TOKEN).strip():
+    raise Exception("ERROR: NOLOCO_API_TOKEN not set!")
+if not PROJECT_ID or not str(PROJECT_ID).strip():
+    raise Exception("ERROR: NOLOCO_PROJECT_ID not set!")
+
+API_TOKEN = str(API_TOKEN).strip()
+PROJECT_ID = str(PROJECT_ID).strip()
+
+REFERENCE_MONDAY = date(2026, 1, 12)  # Matches Noloco_Add_Payroll_Records
+MAX_RETRIES = 3
+RETRY_DELAY = 2
+
+
+def _run_graphql(api_url, headers, query, retry_count=0):
+    """Execute GraphQL query with retry. Uses api_url and headers from env."""
+    try:
+        proxies = {"http": None, "https": None}
+        resp = requests.post(
+            api_url,
+            headers=headers,
+            json={"query": query},
+            proxies=proxies,
+            timeout=30,
+        )
+        if resp.status_code == 429 and retry_count < MAX_RETRIES:
+            time.sleep(RETRY_DELAY * (retry_count + 1))
+            return _run_graphql(api_url, headers, query, retry_count + 1)
+        if resp.status_code >= 500 and retry_count < MAX_RETRIES:
+            time.sleep(RETRY_DELAY * (retry_count + 1))
+            return _run_graphql(api_url, headers, query, retry_count + 1)
+        if resp.status_code == 401:
+            raise Exception("Authentication failed. Check NOLOCO_API_TOKEN.")
+        if resp.status_code != 200:
+            raise Exception(f"API error: {resp.status_code} - {resp.text[:300]}")
+        data = resp.json()
+        if "errors" in data:
+            msgs = [e.get("message", "?") for e in data["errors"]]
+            raise Exception("GraphQL error: " + "; ".join(msgs))
+        return data.get("data") or {}
+    except requests.exceptions.Timeout:
+        if retry_count < MAX_RETRIES:
+            time.sleep(RETRY_DELAY * (retry_count + 1))
+            return _run_graphql(api_url, headers, query, retry_count + 1)
+        raise
+    except requests.exceptions.ConnectionError:
+        if retry_count < MAX_RETRIES:
+            time.sleep(RETRY_DELAY * (retry_count + 1))
+            return _run_graphql(api_url, headers, query, retry_count + 1)
+        raise
+
+
+def _pay_period_for(target_date):
+    """Bi-weekly pay period (Mon–Sun, 14 days). Matches Noloco_Add_Payroll_Records."""
+    monday = target_date - timedelta(days=target_date.weekday())
+    days_from_ref = (monday - REFERENCE_MONDAY).days
+    period_num = days_from_ref // 14
+    start = REFERENCE_MONDAY + timedelta(days=period_num * 14)
+    end = start + timedelta(days=13)
+    return {"start_date": start.strftime("%Y-%m-%d"), "end_date": end.strftime("%Y-%m-%d")}
+
+
+def _is_approved(ts):
+    v = ts.get("approved")
+    if v is True:
+        return True
+    if isinstance(v, str) and (v or "").strip().lower() == "true":
+        return True
+    return False
+
+
+def _fetch_timesheets(api_url, headers):
+    out = []
+    cursor = None
+    while True:
+        if cursor:
+            q = f'query {{ timesheetsCollection(first: 100, after: "{cursor}") {{ edges {{ node {{ id employeePin timesheetDate approved shiftHoursWorked clockDatetime clockOutDatetime }} }} pageInfo {{ hasNextPage endCursor }} }} }}'
+        else:
+            q = "query { timesheetsCollection(first: 100) { edges { node { id employeePin timesheetDate approved shiftHoursWorked clockDatetime clockOutDatetime } } pageInfo { hasNextPage endCursor } } }"
+        data = _run_graphql(api_url, headers, q)
+        coll = data.get("timesheetsCollection") or {}
+        edges = coll.get("edges") or []
+        pi = coll.get("pageInfo") or {}
+        for e in edges:
+            n = e.get("node") or {}
+            out.append({
+                "id": n.get("id"),
+                "employeePin": n.get("employeePin"),
+                "timesheetDate": n.get("timesheetDate"),
+                "approved": n.get("approved"),
+                "shiftHoursWorked": n.get("shiftHoursWorked") or 0,
+                "clockDatetime": n.get("clockDatetime"),
+                "clockOutDatetime": n.get("clockOutDatetime"),
+            })
+        if not pi.get("hasNextPage"):
+            break
+        cursor = pi.get("endCursor")
+        if not cursor:
+            break
+    return out
+
+
+def _fetch_employees(api_url, headers):
+    """Returns dict keyed by normalized employeeIdVal: { payRate, fullName }.
+    Uses employeeFullName from Noloco Employees table."""
+    out = {}
+    cursor = None
+    while True:
+        if cursor:
+            q = f'query {{ employeesCollection(first: 100, after: "{cursor}") {{ edges {{ node {{ employeeIdVal payRate employeeFullName }} }} pageInfo {{ hasNextPage endCursor }} }} }}'
+        else:
+            q = "query { employeesCollection(first: 100) { edges { node { employeeIdVal payRate employeeFullName } } pageInfo { hasNextPage endCursor } } }"
+        data = _run_graphql(api_url, headers, q)
+        coll = data.get("employeesCollection") or {}
+        edges = coll.get("edges") or []
+        pi = coll.get("pageInfo") or {}
+        for e in edges:
+            n = e.get("node") or {}
+            eid = n.get("employeeIdVal")
+            if eid is not None:
+                key = str(eid).strip()
+                out[key] = {
+                    "payRate": n.get("payRate"),
+                    "fullName": n.get("employeeFullName") or "Unknown",
+                }
+        if not pi.get("hasNextPage"):
+            break
+        cursor = pi.get("endCursor")
+        if not cursor:
+            break
+    return out
+
+
+def run_export():
+    api_url = f"https://api.portals.noloco.io/data/{PROJECT_ID}"
+    headers = {"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application/json"}
+
+    period = _pay_period_for(date.today())
+    period_start = datetime.strptime(period["start_date"], "%Y-%m-%d").date()
+    period_end = datetime.strptime(period["end_date"], "%Y-%m-%d").date()
+
+    print("Noloco Payroll Export")
+    print("=" * 60)
+    print(f"Pay period: {period['start_date']} to {period['end_date']}")
+    print("Fetching timesheets...")
+    all_ts = _fetch_timesheets(api_url, headers)
+    print("Fetching employees...")
+    emp_map = _fetch_employees(api_url, headers)
+
+    # Filter: in period and approved; build time_entry_rows and rows for aggregation
+    time_entry_rows = []
+    rows = []
+    for ts in all_ts:
+        if not _is_approved(ts):
+            continue
+        td = (ts.get("timesheetDate") or "").split("T")[0]
+        if not td:
+            continue
+        try:
+            d = datetime.strptime(td, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if not (period_start <= d <= period_end):
+            continue
+        pin = ts.get("employeePin")
+        if pin is None:
+            continue
+        key = str(pin).strip()
+        emp = emp_map.get(key) or {}
+        time_entry_rows.append({
+            "employeeIdVal": pin,
+            "employeeName": emp.get("fullName") or "Unknown",
+            "date": _format_date(td),
+            "clockIn": _format_time(ts.get("clockDatetime")),
+            "clockOut": _format_time(ts.get("clockOutDatetime")),
+            "hours": ts.get("shiftHoursWorked") or 0,
+            "status": "Approved" if _is_approved(ts) else "Pending",
+            "periodStart": _format_date(period["start_date"]),
+            "periodEnd": _format_date(period["end_date"]),
+        })
+        rows.append({
+            "employeeIdVal": pin,
+            "users_fullName": emp.get("fullName") or "Unknown",
+            "shiftHoursWorked": ts.get("shiftHoursWorked") or 0,
+            "users_payRate": emp.get("payRate"),
+        })
+
+    df_agg = pd.DataFrame(rows).groupby("employeeIdVal", as_index=False).agg(
+        users_fullName=("users_fullName", "first"),
+        shiftHoursWorked=("shiftHoursWorked", "sum"),
+        users_payRate=("users_payRate", "first"),
+    ) if rows else pd.DataFrame(columns=["employeeIdVal", "users_fullName", "shiftHoursWorked", "users_payRate"])
+    if len(time_entry_rows) == 0:
+        print("No approved timesheets in this pay period; export will have empty sheets.")
+
+    company = os.getenv("COMPANY_NAME", "Pet Esthetic")
+    period_formatted = _format_period(period)
+    generated_str = _format_generated()
+
+    thin = Side(style="thin")
+    styles = {
+        "title_font": Font(bold=True, size=14),
+        "header_font": Font(bold=True),
+        "header_fill": PatternFill(start_color="F88379", end_color="F88379", fill_type="solid"),  # #f88379
+        "border": Border(left=thin, right=thin, top=thin, bottom=thin),
+    }
+
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    logo_path = os.path.abspath(os.path.join(_script_dir, "..", "assets", "pet_esthetic_transparent.png"))
+    if not os.path.exists(logo_path):
+        logo_path = None
+
+    wb = Workbook()
+    create_time_entries_sheet(wb, company, period_formatted, generated_str, time_entry_rows, styles, logo_path)
+    create_employee_summary_sheet(wb, company, period_formatted, time_entry_rows, styles, logo_path)
+    create_payroll_sheet(wb, df_agg, company, period_formatted, styles, logo_path)
+    if "Sheet" in wb.sheetnames:
+        wb.remove(wb["Sheet"])
+
+    out_path = f"Payroll_Export_{period['start_date']}_to_{period['end_date']}.xlsx"
+    wb.save(out_path)
+    print(f"Saved: {out_path}")
+    print("Done.")
+
+
+if __name__ == "__main__":
+    try:
+        run_export()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        exit(130)
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+
+        traceback.print_exc()
+        exit(1)
