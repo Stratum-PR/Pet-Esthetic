@@ -1365,7 +1365,7 @@ class NolocoPayrollAutomation:
         result = run_graphql_query(mutation)
         payroll_id = result.get("createPayroll", {}).get("id")
         
-        print(f"Created payroll record for employee {employee_id}")
+        print(f"Created payroll record for employee {employee_pin}")
         print(f"   Pay Period: {pay_period['start_date']} to {pay_period['end_date']}")
         print(f"   Payment Date: {payment_date}")
         print(f"   Pay Rate: ${pay_rate:.2f}/hr")
