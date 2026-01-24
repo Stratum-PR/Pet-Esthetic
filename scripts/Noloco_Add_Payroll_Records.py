@@ -348,9 +348,11 @@ def validate_no_duplicate_payroll_per_employee(
     errors = []
     
     # Check for duplicates in existing payroll records
+    # Use employeeIdVal (employee PIN) for consistency
     employee_period_map = {}
     for payroll in existing_payroll_records:
-        emp_id = payroll.get('employee_id')
+        # Get employeeIdVal from payroll record (this is the PIN like "0002")
+        emp_id = payroll.get('employee_id')  # This should be employeeIdVal from the payroll record
         period_start = payroll.get('pay_period_start', '').split('T')[0]
         period_end = payroll.get('pay_period_end', '').split('T')[0]
         
@@ -729,7 +731,7 @@ class NolocoPayrollAutomation:
                             edges {{
                                 node {{
                                     id
-                                    employeeId
+                                    employeeIdVal
                                     payRate
                                 }}
                             }}
@@ -1055,14 +1057,14 @@ class NolocoPayrollAutomation:
         
         return all_payroll
     
-    def find_existing_payroll(self, employee_id: str, pay_period: Dict[str, str], timesheet_ids: List[str]) -> Optional[Dict]:
+    def find_existing_payroll(self, employee_pin: str, pay_period: Dict[str, str], timesheet_ids: List[str]) -> Optional[Dict]:
         """
         Find existing payroll record for employee and pay period.
-        Checks by employee ID and whether any timesheets are already linked.
+        Checks by employee PIN (employeeIdVal) and whether any timesheets are already linked.
         Also fetches related timesheets to check for duplicates.
         
         Args:
-            employee_id: Employee ID
+            employee_pin: Employee PIN (employeeIdVal) - e.g., "0002"
             pay_period: Dict with start_date and end_date
             timesheet_ids: List of timesheet IDs to check if already linked
             
@@ -1195,13 +1197,13 @@ class NolocoPayrollAutomation:
         
         return None
     
-    def create_payroll_record(self, employee_id: str, timesheets: List[Dict], 
+    def create_payroll_record(self, employee_pin: str, timesheets: List[Dict], 
                              pay_period: Dict[str, str]) -> Dict:
         """
         Create new payroll record from timesheets.
         
         Args:
-            employee_id: Employee ID
+            employee_pin: Employee PIN (employeeIdVal) - e.g., "0002"
             timesheets: List of approved timesheets
             pay_period: Pay period dates from the timesheets
             
@@ -1209,15 +1211,19 @@ class NolocoPayrollAutomation:
             Created payroll record
         """
         # Get pay rate from employee record
-        pay_rate = self.get_employee_pay_rate(employee_id)
+        # Use employee_pin to look up pay rate (employee_pin is the employeeIdVal in employees table)
+        pay_rate = self.get_employee_pay_rate(employee_pin) if employee_pin else 0.0
         
         # Get timesheet IDs for the relationship
         timesheet_ids = [ts.get('id') for ts in timesheets]
         
-        # Get employee PIN from first timesheet (all should have same employee)
-        employee_pin = timesheets[0].get('employee_pin') if timesheets else None
-        if not employee_pin:
-            print(f"  WARNING: No employeePin found in timesheets for employee {employee_id}")
+        # employee_pin is already passed as parameter, but verify it matches timesheets
+        timesheet_pin = timesheets[0].get('employee_pin') if timesheets else None
+        if not timesheet_pin:
+            print(f"  WARNING: No employeePin found in timesheets for employee {employee_pin}")
+        elif timesheet_pin != employee_pin:
+            print(f"  WARNING: Employee PIN mismatch! Expected {employee_pin}, got {timesheet_pin} from timesheet")
+            employee_pin = timesheet_pin  # Use the one from timesheet
         
         # Calculate total hours worked
         total_hours = calculate_total_hours(timesheets)
@@ -1226,14 +1232,19 @@ class NolocoPayrollAutomation:
         payment_date = calculate_payment_date(pay_period['end_date'])
         
         # Format dates as ISO datetime strings with timezone
+        # Start date: beginning of the day (00:00:00)
         period_start_dt = datetime.strptime(pay_period['start_date'], '%Y-%m-%d')
-        period_start_dt = period_start_dt.replace(tzinfo=PR_TIMEZONE)
+        period_start_dt = period_start_dt.replace(hour=0, minute=0, second=0, tzinfo=PR_TIMEZONE)
+        
+        # End date: Use the end date at start of day to ensure it doesn't roll over
+        # The API will interpret this as the end date, not the next day
+        # If timesheets are within Jan 12-25, end date should be Jan 25 (not Jan 26)
         period_end_dt = datetime.strptime(pay_period['end_date'], '%Y-%m-%d')
-        period_end_dt = period_end_dt.replace(hour=23, minute=59, second=59, tzinfo=PR_TIMEZONE)
+        period_end_dt = period_end_dt.replace(hour=0, minute=0, second=0, tzinfo=PR_TIMEZONE)
         
         # Format payment date
         payment_date_dt = datetime.strptime(payment_date, '%Y-%m-%d')
-        payment_date_dt = payment_date_dt.replace(tzinfo=PR_TIMEZONE)
+        payment_date_dt = payment_date_dt.replace(hour=0, minute=0, second=0, tzinfo=PR_TIMEZONE)
         
         # Use isoformat() which properly formats timezone as -04:00
         period_start_iso = period_start_dt.isoformat()
@@ -1412,14 +1423,20 @@ class NolocoPayrollAutomation:
                 print(f"WARNING: Skipping timesheet {ts.get('id', 'unknown')} - {error_msg}")
                 continue
             
-            employee_id = ts.get('employee_id')
+            # Use employee_pin (employeeIdVal) consistently - this is what goes in payroll records
+            employee_pin = ts.get('employee_pin')
+            if not employee_pin:
+                print(f"WARNING: Skipping timesheet {ts.get('id', 'unknown')} - missing employee_pin")
+                continue
             
             # Use current pay period for all timesheets
-            key = f"{employee_id}_{current_pay_period['start_date']}_{current_pay_period['end_date']}"
+            # Group by employee_pin to ensure consistency
+            key = f"{employee_pin}_{current_pay_period['start_date']}_{current_pay_period['end_date']}"
             
             if key not in grouped_timesheets:
                 grouped_timesheets[key] = {
-                    'employee_id': employee_id,
+                    'employee_id': employee_pin,  # Use employee_pin as employee_id for consistency
+                    'employee_pin': employee_pin,  # Also store separately for clarity
                     'pay_period': current_pay_period,
                     'timesheets': []
                 }
@@ -1455,13 +1472,14 @@ class NolocoPayrollAutomation:
         validation_failures = []
         
         for key, group in grouped_timesheets.items():
-            employee_id = group['employee_id']
+            employee_pin = group.get('employee_pin') or group.get('employee_id')  # Use employee_pin consistently
+            employee_id = employee_pin  # For display/logging, use the same value
             pay_period = group['pay_period']
             timesheets = group['timesheets']
             timesheet_ids = [ts.get('id') for ts in timesheets]
             
             print(f"\n{'-'*70}")
-            print(f"Employee: {employee_id}")
+            print(f"Employee PIN: {employee_pin}")
             print(f"Pay Period: {pay_period['start_date']} to {pay_period['end_date']}")
             print(f"Timesheets: {len(timesheets)}")
             
@@ -1473,7 +1491,8 @@ class NolocoPayrollAutomation:
                     continue
                 
                 # Check if payroll record already exists (check by timesheet IDs to avoid duplicates)
-                existing_payroll = self.find_existing_payroll(employee_id, pay_period, timesheet_ids)
+                # Use employee_pin (employeeIdVal) for consistency
+                existing_payroll = self.find_existing_payroll(employee_pin, pay_period, timesheet_ids)
                 
                 payroll_id = None
                 if existing_payroll:
@@ -1482,8 +1501,8 @@ class NolocoPayrollAutomation:
                     payroll_id = existing_payroll.get('id')
                     updated_count += 1
                 else:
-                    # Create new payroll record
-                    result = self.create_payroll_record(employee_id, timesheets, pay_period)
+                    # Create new payroll record - use employee_pin consistently
+                    result = self.create_payroll_record(employee_pin, timesheets, pay_period)
                     payroll_id = result.get('id')
                     created_count += 1
                 
@@ -1492,7 +1511,7 @@ class NolocoPayrollAutomation:
                     print(f"  Verifying payroll record {payroll_id}...")
                     is_valid, verify_errors = verify_post_upload(
                         payroll_id,
-                        employee_id,
+                        employee_pin,  # Use employee_pin for verification
                         pay_period,
                         timesheet_ids
                     )
