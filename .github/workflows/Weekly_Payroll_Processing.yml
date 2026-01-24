@@ -1,4 +1,4 @@
-name: Daily_Payroll_Processing
+name: Weekly_Payroll_Processing
 # Run once daily at 6:00 PM Puerto Rico time (UTC-4)
 # GitHub uses UTC, so:
 # 6 PM AST = 10 PM UTC (22:00)
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
   schedule:
     # Every day at 6 PM Puerto Rico time = 10 PM UTC
-    - cron: '0 11 * * 1'
+    - cron: '0 8 * * 1'
 jobs:
   build:
     runs-on: ubuntu-latest  
