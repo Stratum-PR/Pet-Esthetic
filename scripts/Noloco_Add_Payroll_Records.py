@@ -1163,6 +1163,23 @@ class NolocoPayrollAutomation:
                         if payroll_record and payroll_record.get("id"):
                             # This timesheet is already linked to a payroll record
                             payroll_id = payroll_record.get("id")
+                            payroll_employee_pin = payroll_record.get("employeeIdVal")
+                            payroll_period_start = payroll_record.get("payPeriodStart", "").split("T")[0]
+                            payroll_period_end = payroll_record.get("payPeriodEnd", "").split("T")[0]
+                            
+                            # CRITICAL: Verify this payroll record is for the correct employee and period
+                            # Edge case: Timesheet linked to wrong employee's payroll
+                            if payroll_employee_pin != employee_pin:
+                                print(f"  WARNING: Timesheet {ts_id} is linked to payroll {payroll_id} for different employee ({payroll_employee_pin} vs {employee_pin})")
+                                # Don't use this payroll record - it's for a different employee
+                                continue
+                            
+                            # Edge case: Timesheet linked to payroll for different period
+                            if payroll_period_start != pay_period.get('start_date') or payroll_period_end != pay_period.get('end_date'):
+                                print(f"  WARNING: Timesheet {ts_id} is linked to payroll {payroll_id} for different period ({payroll_period_start} to {payroll_period_end} vs {pay_period.get('start_date')} to {pay_period.get('end_date')})")
+                                # Don't use this payroll record - it's for a different period
+                                continue
+                            
                             related_timesheets = payroll_record.get("relatedTimesheets", {})
                             timesheet_edges = related_timesheets.get("edges", [])
                             existing_timesheet_ids = [ts_edge.get("node", {}).get("id") for ts_edge in timesheet_edges]
@@ -1170,11 +1187,11 @@ class NolocoPayrollAutomation:
                             # Get the full payroll record
                             matching_payroll = {
                                 'id': payroll_id,
-                                'employee_id': payroll_record.get("employeeIdVal"),
+                                'employee_id': payroll_employee_pin,
                                 'pay_period_start': payroll_record.get("payPeriodStart"),
                                 'pay_period_end': payroll_record.get("payPeriodEnd"),
                                 'related_timesheet_ids': existing_timesheet_ids,
-                                'existing_hours': 0.0  # Will be calculated if needed
+                                'existing_hours': 0.0  # Will be calculated below
                             }
                             found_linked_timesheet = True
                             break
@@ -1190,9 +1207,80 @@ class NolocoPayrollAutomation:
             print(f"  WARNING: Could not check timesheets for existing payroll: {e}")
         
         if matching_payroll:
-            # Calculate existing hours from related timesheets if needed
-            # For now, we'll fetch them if needed during update
-            matching_payroll['existing_hours'] = 0.0
+            # Calculate existing hours from related timesheets
+            existing_timesheet_ids = matching_payroll.get('related_timesheet_ids', [])
+            if existing_timesheet_ids:
+                try:
+                    # Fetch hours from existing timesheets
+                    query = """
+                    query {
+                        timesheetsCollection(first: 100) {
+                            edges {
+                                node {
+                                    id
+                                    shiftHoursWorked
+                                }
+                            }
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
+                        }
+                    }
+                    """
+                    
+                    all_edges = []
+                    cursor = None
+                    has_more = True
+                    
+                    while has_more:
+                        if cursor:
+                            query = f"""
+                            query {{
+                                timesheetsCollection(first: 100, after: "{cursor}") {{
+                                    edges {{
+                                        node {{
+                                            id
+                                            shiftHoursWorked
+                                        }}
+                                    }}
+                                    pageInfo {{
+                                        hasNextPage
+                                        endCursor
+                                    }}
+                                }}
+                            }}
+                            """
+                        
+                        data = run_graphql_query(query)
+                        collection = data.get("timesheetsCollection", {})
+                        edges = collection.get("edges", [])
+                        page_info = collection.get("pageInfo", {})
+                        
+                        all_edges.extend(edges)
+                        
+                        has_more = page_info.get("hasNextPage", False)
+                        cursor = page_info.get("endCursor")
+                    
+                    # Calculate hours from existing timesheets
+                    existing_hours = 0.0
+                    for edge in all_edges:
+                        node = edge.get("node", {})
+                        if node.get("id") in existing_timesheet_ids:
+                            hours = node.get("shiftHoursWorked")
+                            if hours:
+                                try:
+                                    existing_hours += float(hours)
+                                except (ValueError, TypeError):
+                                    pass
+                    
+                    matching_payroll['existing_hours'] = existing_hours
+                except Exception as e:
+                    print(f"  WARNING: Could not fetch existing hours: {e}")
+                    matching_payroll['existing_hours'] = 0.0
+            else:
+                matching_payroll['existing_hours'] = 0.0
+            
             return matching_payroll
         
         return None
@@ -1443,7 +1531,59 @@ class NolocoPayrollAutomation:
             
             grouped_timesheets[key]['timesheets'].append(ts)
         
-        # CRITICAL: Pre-upload validation
+        # CRITICAL: Check if timesheets are already linked before validation
+        # This prevents errors when payroll records exist but we just need to add new timesheets
+        print("\n" + "="*70)
+        print("CHECKING FOR EXISTING PAYROLL RECORDS")
+        print("="*70)
+        
+        groups_to_process = {}
+        groups_to_skip = {}
+        
+        for key, group in grouped_timesheets.items():
+            employee_pin = group.get('employee_pin')
+            pay_period = group.get('pay_period')
+            timesheets = group.get('timesheets', [])
+            timesheet_ids = [ts.get('id') for ts in timesheets if ts.get('id')]
+            
+            if not timesheet_ids:
+                print(f"WARNING: No valid timesheet IDs for group {key}, skipping")
+                continue
+            
+            # Check if any timesheets are already linked to a payroll record
+            existing_payroll = self.find_existing_payroll(employee_pin, pay_period, timesheet_ids)
+            
+            if existing_payroll:
+                # Check which timesheets are already linked
+                existing_timesheet_ids = set(existing_payroll.get('related_timesheet_ids', []))
+                unlinked_timesheets = [ts for ts in timesheets if ts.get('id') not in existing_timesheet_ids]
+                
+                if not unlinked_timesheets:
+                    # All timesheets are already linked - skip this group
+                    print(f"All timesheets for employee {employee_pin} are already linked to payroll {existing_payroll.get('id')}")
+                    print(f"  Skipping group - no new timesheets to process")
+                    groups_to_skip[key] = group
+                else:
+                    # Some timesheets are new - update the payroll record with only new ones
+                    print(f"Found existing payroll {existing_payroll.get('id')} for employee {employee_pin}")
+                    print(f"  {len(existing_timesheet_ids)} timesheet(s) already linked")
+                    print(f"  {len(unlinked_timesheets)} new timesheet(s) to add")
+                    # Update the group to only include unlinked timesheets
+                    group['timesheets'] = unlinked_timesheets
+                    group['existing_payroll'] = existing_payroll
+                    groups_to_process[key] = group
+            else:
+                # No existing payroll - will create new one
+                groups_to_process[key] = group
+        
+        if groups_to_skip:
+            print(f"\nSkipped {len(groups_to_skip)} group(s) - all timesheets already processed")
+        
+        if not groups_to_process:
+            print("\nNo new timesheets to process - all are already linked to payroll records.")
+            return
+        
+        # CRITICAL: Pre-upload validation (only on groups we're actually processing)
         print("\n" + "="*70)
         print("PRE-UPLOAD VALIDATION")
         print("="*70)
@@ -1451,7 +1591,7 @@ class NolocoPayrollAutomation:
         # Get all existing payroll records for validation
         all_existing_payroll = self.get_all_payroll()
         
-        is_valid, validation_errors = validate_pre_upload(grouped_timesheets, all_existing_payroll)
+        is_valid, validation_errors = validate_pre_upload(groups_to_process, all_existing_payroll)
         
         if not is_valid:
             print("\nCRITICAL VALIDATION ERRORS DETECTED - ABORTING PROCESSING")
@@ -1490,13 +1630,17 @@ class NolocoPayrollAutomation:
                     print(f"  ERROR: Invalid pay period - {error_msg}")
                     continue
                 
-                # Check if payroll record already exists (check by timesheet IDs to avoid duplicates)
-                # Use employee_pin (employeeIdVal) for consistency
-                existing_payroll = self.find_existing_payroll(employee_pin, pay_period, timesheet_ids)
+                # Check if we already found an existing payroll during pre-check
+                # (This avoids duplicate queries)
+                existing_payroll = group.get('existing_payroll')
+                
+                if not existing_payroll:
+                    # Double-check if payroll exists (in case it was created between pre-check and now)
+                    existing_payroll = self.find_existing_payroll(employee_pin, pay_period, timesheet_ids)
                 
                 payroll_id = None
                 if existing_payroll:
-                    # Update existing payroll
+                    # Update existing payroll with new timesheets
                     result = self.update_payroll_record(existing_payroll, timesheets)
                     payroll_id = existing_payroll.get('id')
                     updated_count += 1

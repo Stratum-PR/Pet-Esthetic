@@ -210,3 +210,4 @@ scripts/run_tests_simple.py
 scripts/test_run.py
 scripts/test_payroll_validation.py
 scripts/test_with_new_token.py
+scripts/PAYROLL_EDGE_CASES.md
