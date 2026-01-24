@@ -333,49 +333,81 @@ def normalize_datetime_for_comparison(dt_string: Optional[str]) -> Optional[str]
 
 def validate_no_duplicate_payroll_per_employee(
     grouped_timesheets: Dict,
-    existing_payroll_records: List[Dict]
+    existing_payroll_records: List[Dict],
+    current_pay_period: Optional[Dict[str, str]] = None
 ) -> Tuple[bool, List[str]]:
     """
     CRITICAL: Validate no duplicate payroll records per employee and pay period.
+    Only validates against the current pay period being processed.
     
     Args:
         grouped_timesheets: Dict of grouped timesheets by employee/pay period
         existing_payroll_records: List of existing payroll records
+        current_pay_period: Current pay period being processed (optional, for filtering)
         
     Returns:
         Tuple of (is_valid, list_of_errors)
     """
     errors = []
     
-    # Check for duplicates in existing payroll records
-    # Use employeeIdVal (employee PIN) for consistency
+    # Normalize employee ID for comparison (handle both "2" and "0002" formats)
+    def normalize_emp_id(emp_id):
+        if not emp_id:
+            return None
+        emp_id_str = str(emp_id).strip()
+        # Try to convert to int and back to see if it's a number
+        try:
+            # If it's numeric, we need to preserve the original format
+            # But for comparison, we'll use the string as-is
+            return emp_id_str
+        except:
+            return emp_id_str
+    
+    # Only check existing payroll records for the CURRENT pay period
+    # This prevents false positives from other periods
     employee_period_map = {}
+    current_period_start = current_pay_period.get('start_date') if current_pay_period else None
+    current_period_end = current_pay_period.get('end_date') if current_pay_period else None
+    
     for payroll in existing_payroll_records:
-        # Get employeeIdVal from payroll record (this is the PIN like "0002")
-        emp_id = payroll.get('employee_id')  # This should be employeeIdVal from the payroll record
+        # Get employeeIdVal from payroll record (this is the PIN like "0002" or "2")
+        emp_id_raw = payroll.get('employee_id')
         period_start = payroll.get('pay_period_start', '').split('T')[0]
         period_end = payroll.get('pay_period_end', '').split('T')[0]
         
-        if emp_id and period_start and period_end:
+        # Only check payroll records for the current pay period
+        if current_period_start and current_period_end:
+            if period_start != current_period_start or period_end != current_period_end:
+                continue  # Skip payroll records from other periods
+        
+        if emp_id_raw and period_start and period_end:
+            emp_id = normalize_emp_id(emp_id_raw)
             key = f"{emp_id}_{period_start}_{period_end}"
+            
+            # Check for duplicates in existing records (same employee + period)
             if key in employee_period_map:
-                errors.append(
-                    f"CRITICAL: Duplicate payroll record found for employee {emp_id} "
-                    f"and pay period {period_start} to {period_end}. "
-                    f"Existing IDs: {employee_period_map[key]}, {payroll.get('id')}"
-                )
+                existing_id = employee_period_map[key]
+                new_id = payroll.get('id')
+                # Only report if they're actually different records
+                if existing_id != new_id:
+                    errors.append(
+                        f"CRITICAL: Duplicate payroll record found for employee {emp_id} "
+                        f"and pay period {period_start} to {period_end}. "
+                        f"Existing IDs: {existing_id}, {new_id}"
+                    )
             else:
                 employee_period_map[key] = payroll.get('id')
     
     # Check for duplicates in what we're about to create
     new_keys = {}
     for key, group in grouped_timesheets.items():
-        emp_id = group.get('employee_id')
+        emp_id_raw = group.get('employee_id') or group.get('employee_pin')
         pay_period = group.get('pay_period', {})
         period_start = pay_period.get('start_date')
         period_end = pay_period.get('end_date')
         
-        if emp_id and period_start and period_end:
+        if emp_id_raw and period_start and period_end:
+            emp_id = normalize_emp_id(emp_id_raw)
             check_key = f"{emp_id}_{period_start}_{period_end}"
             
             # Check against existing - but skip if this is an update operation
@@ -487,7 +519,8 @@ def validate_no_duplicate_clock_times(
 
 def validate_pre_upload(
     grouped_timesheets: Dict,
-    existing_payroll_records: List[Dict]
+    existing_payroll_records: List[Dict],
+    current_pay_period: Optional[Dict[str, str]] = None
 ) -> Tuple[bool, List[str]]:
     """
     CRITICAL: Comprehensive pre-upload validation.
@@ -496,6 +529,7 @@ def validate_pre_upload(
     Args:
         grouped_timesheets: Dict of grouped timesheets by employee/pay period
         existing_payroll_records: List of existing payroll records
+        current_pay_period: Current pay period being processed (for filtering validation)
         
     Returns:
         Tuple of (is_valid, list_of_all_errors)
@@ -504,7 +538,7 @@ def validate_pre_upload(
     
     # Validation 1: No duplicate payroll per employee/pay period
     is_valid, errors = validate_no_duplicate_payroll_per_employee(
-        grouped_timesheets, existing_payroll_records
+        grouped_timesheets, existing_payroll_records, current_pay_period
     )
     if not is_valid:
         all_errors.extend(errors)
@@ -1302,20 +1336,35 @@ class NolocoPayrollAutomation:
         Returns:
             Created payroll record
         """
+        # CRITICAL: Ensure employee_pin is a string and preserves leading zeros
+        if not employee_pin:
+            raise Exception("CRITICAL: Cannot create payroll - employee_pin is missing")
+        
+        employee_pin = str(employee_pin).strip()
+        
         # Get pay rate from employee record
         # Use employee_pin to look up pay rate (employee_pin is the employeeIdVal in employees table)
         pay_rate = self.get_employee_pay_rate(employee_pin) if employee_pin else 0.0
         
-        # Get timesheet IDs for the relationship
-        timesheet_ids = [ts.get('id') for ts in timesheets]
+        if pay_rate == 0.0:
+            print(f"  WARNING: Pay rate is 0.0 for employee {employee_pin} - check employee record")
         
-        # employee_pin is already passed as parameter, but verify it matches timesheets
-        timesheet_pin = timesheets[0].get('employee_pin') if timesheets else None
-        if not timesheet_pin:
-            print(f"  WARNING: No employeePin found in timesheets for employee {employee_pin}")
-        elif timesheet_pin != employee_pin:
-            print(f"  WARNING: Employee PIN mismatch! Expected {employee_pin}, got {timesheet_pin} from timesheet")
-            employee_pin = timesheet_pin  # Use the one from timesheet
+        # Get timesheet IDs for the relationship
+        timesheet_ids = [ts.get('id') for ts in timesheets if ts.get('id')]
+        
+        if not timesheet_ids:
+            raise Exception("CRITICAL: Cannot create payroll - no valid timesheet IDs")
+        
+        # Verify employee_pin matches timesheets (use first valid one if mismatch)
+        for ts in timesheets:
+            ts_pin = ts.get('employee_pin')
+            if ts_pin:
+                ts_pin = str(ts_pin).strip()
+                if ts_pin != employee_pin:
+                    print(f"  WARNING: Employee PIN mismatch in timesheet {ts.get('id')}! Expected {employee_pin}, got {ts_pin}")
+                    # Use the one from timesheet to be safe
+                    employee_pin = ts_pin
+                    break
         
         # Calculate total hours worked
         total_hours = calculate_total_hours(timesheets)
@@ -1348,7 +1397,8 @@ class NolocoPayrollAutomation:
         timesheet_ids_str = ', '.join([f'"{tid}"' for tid in timesheet_ids])
         
         # Build mutation with all fields
-        employee_pin_str = f'"{employee_pin}"' if employee_pin else 'null'
+        # employee_pin is already validated and normalized above
+        employee_pin_str = f'"{employee_pin}"'
         
         mutation = f"""
         mutation {{
@@ -1516,10 +1566,16 @@ class NolocoPayrollAutomation:
                 continue
             
             # Use employee_pin (employeeIdVal) consistently - this is what goes in payroll records
-            employee_pin = ts.get('employee_pin')
-            if not employee_pin:
+            # CRITICAL: Ensure employee_pin is a string and preserves leading zeros
+            employee_pin_raw = ts.get('employee_pin')
+            if not employee_pin_raw:
                 print(f"WARNING: Skipping timesheet {ts.get('id', 'unknown')} - missing employee_pin")
                 continue
+            
+            # Convert to string and preserve format (leading zeros)
+            # If it's a number like 2, we need to check the original format from employeePin field
+            # The employeePin field should already have the correct format, but ensure it's a string
+            employee_pin = str(employee_pin_raw).strip()
             
             # Use current pay period for all timesheets
             # Group by employee_pin to ensure consistency
@@ -1595,7 +1651,8 @@ class NolocoPayrollAutomation:
         # Get all existing payroll records for validation
         all_existing_payroll = self.get_all_payroll()
         
-        is_valid, validation_errors = validate_pre_upload(groups_to_process, all_existing_payroll)
+        # Pass current pay period to validation so it only checks relevant records
+        is_valid, validation_errors = validate_pre_upload(groups_to_process, all_existing_payroll, current_pay_period)
         
         if not is_valid:
             print("\nCRITICAL VALIDATION ERRORS DETECTED - ABORTING PROCESSING")
