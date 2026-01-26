@@ -98,6 +98,32 @@ def convert_utc_to_pr(utc_datetime_string):
         raise Exception(f"Failed to convert datetime '{utc_datetime_string}': {str(e)}")
 
 
+def should_exclude_employee(employee_pin=None, employee_id=None, employee_full_name=None):
+    """
+    Check if an employee should be excluded from timesheet issue warnings.
+    Excludes owner (Kristopher Varela) who is testing the app.
+    
+    Args:
+        employee_pin: Employee PIN (string)
+        employee_id: Employee ID (string)
+        employee_full_name: Employee full name (string)
+    
+    Returns:
+        True if employee should be excluded, False otherwise
+    """
+    # Check if PIN or ID equals "0001"
+    if employee_pin and str(employee_pin).strip() == "0001":
+        return True
+    if employee_id and str(employee_id).strip() == "0001":
+        return True
+    
+    # Check if full name equals "Kristopher Varela"
+    if employee_full_name and str(employee_full_name).strip() == "Kristopher Varela":
+        return True
+    
+    return False
+
+
 def run_graphql_query(config, query, retry_count=0):
     """Send a GraphQL query to Noloco API with retry logic"""
     try:
@@ -341,6 +367,14 @@ def check_missing_clock_out(config):
             
             # Flag if more than 8 hours
             if hours_since > 8:
+                # Check if employee should be excluded (owner testing)
+                if should_exclude_employee(
+                    employee_pin=row.get('employeePin'),
+                    employee_id=row.get('employeeIdVal'),
+                    employee_full_name=row.get('employeeFullName')
+                ):
+                    continue  # Skip this record - owner is testing
+                
                 problematic_records.append({
                     'id': row['id'],
                     'employee_id': row['employeeIdVal'],
@@ -580,6 +614,23 @@ def validate_comparison(clocking_df, timesheets_df, missing_df):
             orphaned_records_df = timesheets_df[~timesheets_df["match_key_temp"].isin(clocking_keys)].copy()
             orphaned_records_df = orphaned_records_df.drop(columns=["match_key_temp"])
             
+            # Filter out owner's records (exclude from issues)
+            if len(orphaned_records_df) > 0:
+                # Create exclusion mask
+                exclusion_mask = orphaned_records_df.apply(
+                    lambda row: should_exclude_employee(
+                        employee_pin=row.get('employeePin'),
+                        employee_id=None,  # timesheets_df doesn't have employeeIdVal
+                        employee_full_name=None  # timesheets_df doesn't have employeeFullName
+                    ),
+                    axis=1
+                )
+                excluded_count = exclusion_mask.sum()
+                orphaned_records_df = orphaned_records_df[~exclusion_mask].copy()
+                
+                if excluded_count > 0:
+                    print(f"         Excluded {excluded_count} orphaned record(s) for owner (testing)")
+            
             if len(orphaned_records_df) > 0:
                 print(f"         Found {len(orphaned_records_df)} orphaned records")
     else:
@@ -632,6 +683,14 @@ def validate_work_hours(records_df):
             hours_worked = (clock_out_dt - clock_in_dt).total_seconds() / 3600
             
             if hours_worked > 8:
+                # Check if employee should be excluded (owner testing)
+                if should_exclude_employee(
+                    employee_pin=row.get('employeePin'),
+                    employee_id=row.get('employeeIdVal'),
+                    employee_full_name=row.get('employeeFullName')
+                ):
+                    continue  # Skip this record - owner is testing
+                
                 flagged_records.append({
                     'employee_pin': row['employeePin'],
                     'clock_in': row['clock_in_normalized'],
@@ -674,6 +733,13 @@ def upload_to_timesheets(config, records_df, employee_pin_mapping):
     failed_reasons = {}
     
     for index, row in records_df.iterrows():
+        # Check if employee should be excluded (owner testing) - still upload but don't count failures
+        is_owner = should_exclude_employee(
+            employee_pin=row.get('employeePin'),
+            employee_id=row.get('employeeIdVal'),
+            employee_full_name=row.get('employeeFullName')
+        )
+        
         try:
             # Convert to PR timezone
             clock_in_pr = convert_utc_to_pr(row['clockIn'])
@@ -686,8 +752,11 @@ def upload_to_timesheets(config, records_df, employee_pin_mapping):
             
             if not employee_record_id:
                 reason = f"No employee found for PIN {row['employeePin']}"
-                print(f"  ⚠️  Skipping record {index + 1}: {reason}")
-                failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
+                if is_owner:
+                    print(f"  ⚠️  Skipping owner record {index + 1}: {reason} (not counted as issue)")
+                else:
+                    print(f"  ⚠️  Skipping record {index + 1}: {reason}")
+                    failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
                 continue
             
             create_mutation = f"""
@@ -707,22 +776,30 @@ def upload_to_timesheets(config, records_df, employee_pin_mapping):
             
             result = run_graphql_query(config, create_mutation)
             created_count += 1
-            print(f"  ✓ Created record {created_count}/{len(records_df)}: PIN {row['employeePin']}")
+            if is_owner:
+                print(f"  ✓ Created owner record {created_count}/{len(records_df)}: PIN {row['employeePin']} (not counted as issue)")
+            else:
+                print(f"  ✓ Created record {created_count}/{len(records_df)}: PIN {row['employeePin']}")
             
             if config.rate_limit_delay > 0 and created_count < len(records_df):
                 time.sleep(config.rate_limit_delay)
                 
         except Exception as e:
             error_msg = str(e)
-            if "Schema error" in error_msg:
-                reason = "Schema error"
-            elif "Duplicate record" in error_msg:
-                reason = "Duplicate record"
+            if is_owner:
+                # Don't count owner failures as issues
+                print(f"  ⚠️  Owner record {index + 1} failed (not counted as issue): {error_msg}")
             else:
-                reason = "API error"
-            
-            print(f"  ✗ Failed record {index + 1}: {error_msg}")
-            failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
+                # Count regular employee failures as issues
+                if "Schema error" in error_msg:
+                    reason = "Schema error"
+                elif "Duplicate record" in error_msg:
+                    reason = "Duplicate record"
+                else:
+                    reason = "API error"
+                
+                print(f"  ✗ Failed record {index + 1}: {error_msg}")
+                failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
     
     print("\n  Upload Summary:")
     print(f"  ✓ Successfully created: {created_count}")
