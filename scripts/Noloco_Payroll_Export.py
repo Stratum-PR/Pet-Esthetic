@@ -19,6 +19,10 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image
 
+# Import email functions from timesheets script
+from tools import send_gmail
+from config import Config
+
 
 def _format_date(d):
     """Format date or YYYY-MM-DD string as MM/DD/YYYY."""
@@ -495,6 +499,44 @@ def run_export():
     out_path = f"Payroll_Export_{period['start_date']}_to_{period['end_date']}.xlsx"
     wb.save(out_path)
     print(f"Saved: {out_path}")
+    
+    # Send email with payroll export file
+    try:
+        config = Config.from_env()
+        if config.email_recipients:
+            print("\nSending payroll export via email...")
+            subject = f"Payroll Export - {period_formatted}"
+            body_html = f"""
+            <html>
+            <body>
+                <h2>Payroll Export Report</h2>
+                <p>Please find attached the payroll export for the period:</p>
+                <p><strong>{period_formatted}</strong></p>
+                <p>Generated: {generated_str}</p>
+                <p>This file contains three sheets:</p>
+                <ul>
+                    <li><strong>Time Entries</strong> - Detailed timesheet entries</li>
+                    <li><strong>Employee Summary</strong> - Summary by employee</li>
+                    <li><strong>Payroll</strong> - Pay calculations with editable rates</li>
+                </ul>
+            </body>
+            </html>
+            """
+            
+            send_gmail(
+                to_emails=config.email_recipients,
+                subject=subject,
+                body_html=body_html,
+                attachment_path=out_path,
+                attachment_filename=os.path.basename(out_path)
+            )
+            print(f"✓ Email sent successfully to: {', '.join(config.email_recipients)}")
+        else:
+            print("\n⚠️  Email recipients not configured (EMAIL_RECIPIENTS not set). Skipping email.")
+    except Exception as e:
+        print(f"\n⚠️  Warning: Failed to send email: {str(e)}")
+        print("  The export file was saved successfully, but the email notification failed.")
+    
     print("Done.")
 
 
