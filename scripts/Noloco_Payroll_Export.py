@@ -368,15 +368,15 @@ def _fetch_timesheets(api_url, headers):
 
 
 def _fetch_employees(api_url, headers):
-    """Returns dict keyed by normalized employeePin: { payRate, fullName, employeeIdVal }.
+    """Returns dict keyed by normalized employeePin: { payRate, fullName }.
     Uses employeeFullName from Noloco Employees table. Keyed by PIN since timesheets use PIN."""
     out = {}
     cursor = None
     while True:
         if cursor:
-            q = f'query {{ employeesCollection(first: 100, after: "{cursor}") {{ edges {{ node {{ employeePin employeeIdVal payRate employeeFullName }} }} pageInfo {{ hasNextPage endCursor }} }} }}'
+            q = f'query {{ employeesCollection(first: 100, after: "{cursor}") {{ edges {{ node {{ employeePin payRate employeeFullName }} }} pageInfo {{ hasNextPage endCursor }} }} }}'
         else:
-            q = "query { employeesCollection(first: 100) { edges { node { employeePin employeeIdVal payRate employeeFullName } } pageInfo { hasNextPage endCursor } } }"
+            q = "query { employeesCollection(first: 100) { edges { node { employeePin payRate employeeFullName } } pageInfo { hasNextPage endCursor } } }"
         data = _run_graphql(api_url, headers, q)
         coll = data.get("employeesCollection") or {}
         edges = coll.get("edges") or []
@@ -387,7 +387,6 @@ def _fetch_employees(api_url, headers):
             if pin is not None:
                 key = str(pin).strip()
                 out[key] = {
-                    "employeeIdVal": n.get("employeeIdVal"),
                     "payRate": n.get("payRate"),
                     "fullName": n.get("employeeFullName") or "Unknown",
                 }
@@ -451,10 +450,9 @@ def run_export():
             continue
         key = str(pin).strip()
         emp = emp_map.get(key) or {}
-        # Use employeeIdVal from employee record if available, otherwise fall back to PIN
-        employee_id = emp.get("employeeIdVal") if emp else pin
+        # Use employeePin as employeeIdVal in all tables for consistency
         time_entry_rows.append({
-            "employeeIdVal": employee_id,
+            "employeeIdVal": pin,
             "employeeName": emp.get("fullName") or "Unknown",
             "date": _format_date(td),
             "clockIn": _format_time(ts.get("clockDatetime")),
@@ -465,7 +463,7 @@ def run_export():
             "periodEnd": _format_date(period["end_date"]),
         })
         rows.append({
-            "employeeIdVal": employee_id,
+            "employeeIdVal": pin,
             "users_fullName": emp.get("fullName") or "Unknown",
             "shiftHoursWorked": ts.get("shiftHoursWorked") or 0,
             "users_payRate": emp.get("payRate"),
