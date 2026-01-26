@@ -368,6 +368,112 @@ def _fetch_timesheets(api_url, headers):
     return out
 
 
+def _upload_file_to_noloco(api_url, headers, file_path):
+    """Upload a file to Noloco's media storage and return the file URL."""
+    if not os.path.exists(file_path):
+        raise Exception(f"File not found: {file_path}")
+    
+    # Noloco file upload endpoint
+    upload_url = f"https://api.portals.noloco.io/media/{PROJECT_ID}/upload"
+    
+    # Read file
+    with open(file_path, 'rb') as f:
+        file_data = f.read()
+    
+    # Prepare multipart form data
+    filename = os.path.basename(file_path)
+    files = {
+        'file': (filename, file_data, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    }
+    
+    # Upload file
+    upload_headers = {
+        "Authorization": f"Bearer {API_TOKEN}"
+    }
+    
+    proxies = {"http": None, "https": None}
+    response = requests.post(
+        upload_url,
+        headers=upload_headers,
+        files=files,
+        proxies=proxies,
+        timeout=60
+    )
+    
+    if response.status_code != 200:
+        raise Exception(f"File upload failed: {response.status_code} - {response.text[:300]}")
+    
+    result = response.json()
+    file_url = result.get("url") or result.get("fileUrl") or result.get("file_url")
+    
+    if not file_url:
+        # Try to extract URL from response
+        response_text = response.text
+        if "url" in response_text.lower():
+            import json
+            try:
+                data = json.loads(response_text)
+                file_url = data.get("url") or data.get("fileUrl") or data.get("file_url")
+            except:
+                pass
+        
+        if not file_url:
+            raise Exception(f"File upload succeeded but no URL returned. Response: {response.text[:300]}")
+    
+    return file_url
+
+
+def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, period):
+    """Upload Excel file to Noloco documents table."""
+    if not os.path.exists(file_path):
+        raise Exception(f"File not found: {file_path}")
+    
+    # Upload file first to get URL
+    print("  Uploading file to Noloco media storage...")
+    file_url = _upload_file_to_noloco(api_url, headers, file_path)
+    print(f"  ✓ File uploaded, URL: {file_url[:80]}...")
+    
+    # Prepare document data
+    filename = os.path.basename(file_path)
+    document_type = "Payroll Export"
+    notes = f"Payroll export for period {period_formatted} (Generated: {_format_generated()})"
+    
+    # Escape special characters for GraphQL strings
+    def escape_graphql_string(s):
+        if s is None:
+            return ""
+        s = str(s).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+        return s
+    
+    escaped_notes = escape_graphql_string(notes)
+    escaped_filename = escape_graphql_string(filename)
+    escaped_file_url = escape_graphql_string(file_url)
+    
+    # Create document record
+    mutation = f"""
+    mutation {{
+        createDocuments(
+            documentType: "{document_type}"
+            notes: "{escaped_notes}"
+            documentName: "{escaped_filename}"
+            document: "{escaped_file_url}"
+        ) {{
+            id
+        }}
+    }}
+    """
+    
+    print("  Creating document record in Noloco...")
+    data = _run_graphql(api_url, headers, mutation)
+    
+    doc_id = data.get("createDocuments", {}).get("id")
+    if not doc_id:
+        raise Exception("Document creation failed - no ID returned")
+    
+    print(f"  ✓ Document record created with ID: {doc_id}")
+    return doc_id
+
+
 def _fetch_employees(api_url, headers):
     """Returns dict keyed by normalized employeeIdVal: { payRate }.
     Only fetches pay rates since employeeFullName comes from timesheets."""
@@ -542,6 +648,15 @@ def run_export():
     except Exception as e:
         print(f"\n⚠️  Warning: Failed to send email: {str(e)}")
         print("  The export file was saved successfully, but the email notification failed.")
+    
+    # Upload file to Noloco documents table
+    try:
+        print("\nUploading payroll export to Noloco documents table...")
+        upload_to_noloco_documents(api_url, headers, out_path, period_formatted, period)
+        print("✓ File uploaded to Noloco documents table successfully")
+    except Exception as e:
+        print(f"\n⚠️  Warning: Failed to upload to Noloco documents: {str(e)}")
+        print("  The export file was saved successfully, but the document upload failed.")
     
     print("Done.")
 
