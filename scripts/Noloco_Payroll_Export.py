@@ -509,7 +509,7 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
             "documentType": document_type,
             "notes": escaped_notes,
             "documentName": escaped_filename,
-            "document": None  # Will be replaced by map
+            "document": []  # Empty array - will be populated by map to .0
         }
     }
     
