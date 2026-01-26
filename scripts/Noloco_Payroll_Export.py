@@ -459,7 +459,7 @@ def _upload_file_to_noloco(api_url, headers, file_path):
 
 
 def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, period):
-    """Upload Excel file to Noloco documents table."""
+    """Upload Excel file to Noloco documents table using GraphQL multipart request."""
     if not os.path.exists(file_path):
         raise Exception(f"File not found: {file_path}")
     
@@ -468,30 +468,122 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
     document_type = "Payroll Export"
     notes = f"Payroll export for period {period_formatted} (Generated: {_format_generated()})"
     
-    # Try to upload file first
-    file_url = None
+    # Try GraphQL multipart request specification for file upload
+    # This follows the GraphQL multipart request spec: https://github.com/jaydenseric/graphql-multipart-request-spec
     try:
-        print("  Uploading file to Noloco media storage...")
+        print("  Uploading file using GraphQL multipart request...")
+        
+        # Read file
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
+        
+        # Create multipart form data according to GraphQL multipart request spec
+        import uuid
+        boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+        
+        # Build the multipart form data
+        # Format: operations, map, and file parts
+        operations = {
+            "query": """
+                mutation ($file: Upload!, $documentType: String!, $notes: String!, $documentName: String!) {
+                    createDocuments(
+                        document: $file
+                        documentType: $documentType
+                        notes: $notes
+                        documentName: $documentName
+                    ) {
+                        id
+                    }
+                }
+            """,
+            "variables": {
+                "file": None,  # Will be replaced by map
+                "documentType": document_type,
+                "notes": notes,
+                "documentName": filename
+            }
+        }
+        
+        # Map file to variable
+        file_map = {
+            "0": ["variables.file"]
+        }
+        
+        # Build multipart body
+        body_parts = []
+        
+        # Operations part
+        body_parts.append(f"--{boundary}")
+        body_parts.append('Content-Disposition: form-data; name="operations"')
+        body_parts.append("Content-Type: application/json")
+        body_parts.append("")
+        import json
+        body_parts.append(json.dumps(operations))
+        
+        # Map part
+        body_parts.append(f"--{boundary}")
+        body_parts.append('Content-Disposition: form-data; name="map"')
+        body_parts.append("Content-Type: application/json")
+        body_parts.append("")
+        body_parts.append(json.dumps(file_map))
+        
+        # File part
+        body_parts.append(f"--{boundary}")
+        body_parts.append(f'Content-Disposition: form-data; name="0"; filename="{filename}"')
+        body_parts.append("Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        body_parts.append("")
+        
+        # Combine all parts
+        body_text = "\r\n".join(body_parts) + "\r\n"
+        body_binary = body_text.encode('utf-8') + file_data + f"\r\n--{boundary}--\r\n".encode('utf-8')
+        
+        # Upload with multipart headers
+        multipart_headers = {
+            "Authorization": f"Bearer {API_TOKEN}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}"
+        }
+        
+        proxies = {"http": None, "https": None}
+        response = requests.post(
+            api_url,
+            headers=multipart_headers,
+            data=body_binary,
+            proxies=proxies,
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            doc_id = result.get("data", {}).get("createDocuments", {}).get("id")
+            if doc_id:
+                print(f"  ✓ File uploaded and document record created with ID: {doc_id}")
+                return doc_id
+        
+        # If multipart didn't work, try alternative: upload file first, then create record
+        print("  GraphQL multipart upload failed, trying alternative method...")
+        
+    except Exception as e:
+        print(f"  GraphQL multipart upload failed: {str(e)}")
+        print("  Trying alternative: upload file first, then create document record...")
+    
+    # Alternative approach: Try to upload file to get URL, then create document
+    try:
+        print("  Attempting file upload to get URL...")
         file_url = _upload_file_to_noloco(api_url, headers, file_path)
         print(f"  ✓ File uploaded, URL: {file_url[:80]}...")
-    except Exception as upload_error:
-        print(f"  ⚠️  File upload failed: {str(upload_error)}")
-        print("  Creating document record without file URL (file can be uploaded manually later)")
-        # Continue without file URL - user can upload manually
-    
-    # Escape special characters for GraphQL strings
-    def escape_graphql_string(s):
-        if s is None:
-            return ""
-        s = str(s).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
-        return s
-    
-    escaped_notes = escape_graphql_string(notes)
-    escaped_filename = escape_graphql_string(filename)
-    
-    # Build mutation - include document field only if we have a URL
-    if file_url:
+        
+        # Escape special characters for GraphQL strings
+        def escape_graphql_string(s):
+            if s is None:
+                return ""
+            s = str(s).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+            return s
+        
+        escaped_notes = escape_graphql_string(notes)
+        escaped_filename = escape_graphql_string(filename)
         escaped_file_url = escape_graphql_string(file_url)
+        
+        # Create document record with file URL
         mutation = f"""
         mutation {{
             createDocuments(
@@ -504,8 +596,33 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
             }}
         }}
         """
-    else:
-        # Create record without document field (file can be added manually)
+        
+        print("  Creating document record in Noloco...")
+        data = _run_graphql(api_url, headers, mutation)
+        
+        doc_id = data.get("createDocuments", {}).get("id")
+        if not doc_id:
+            raise Exception("Document creation failed - no ID returned")
+        
+        print(f"  ✓ Document record created with ID: {doc_id} (file attached)")
+        return doc_id
+        
+    except Exception as upload_error:
+        # Last resort: create record without file
+        print(f"  ⚠️  File upload failed: {str(upload_error)}")
+        print("  Creating document record without file URL (file can be uploaded manually later)")
+        
+        # Escape special characters for GraphQL strings
+        def escape_graphql_string(s):
+            if s is None:
+                return ""
+            s = str(s).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+            return s
+        
+        escaped_notes = escape_graphql_string(notes)
+        escaped_filename = escape_graphql_string(filename)
+        
+        # Create document record without file URL
         mutation = f"""
         mutation {{
             createDocuments(
@@ -517,21 +634,17 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
             }}
         }}
         """
-    
-    print("  Creating document record in Noloco...")
-    data = _run_graphql(api_url, headers, mutation)
-    
-    doc_id = data.get("createDocuments", {}).get("id")
-    if not doc_id:
-        raise Exception("Document creation failed - no ID returned")
-    
-    if file_url:
-        print(f"  ✓ Document record created with ID: {doc_id} (file attached)")
-    else:
+        
+        print("  Creating document record in Noloco...")
+        data = _run_graphql(api_url, headers, mutation)
+        
+        doc_id = data.get("createDocuments", {}).get("id")
+        if not doc_id:
+            raise Exception("Document creation failed - no ID returned")
+        
         print(f"  ✓ Document record created with ID: {doc_id} (file needs to be uploaded manually)")
         print(f"     File location: {os.path.abspath(file_path)}")
-    
-    return doc_id
+        return doc_id
 
 
 def _fetch_employees(api_url, headers):
