@@ -482,8 +482,9 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
     
     # Build operations JSON according to Noloco's format
     # Based on the community example, the format is:
+    # Note: document field expects [Upload!] (array), not a single Upload
     operations_json = {
-        "query": f"""mutation createDocuments($documentType: String!, $notes: String!, $documentName: String!, $document: Upload) {{
+        "query": f"""mutation createDocuments($documentType: String!, $notes: String!, $documentName: String!, $document: [Upload!]) {{
             createDocuments(
                 documentType: $documentType
                 notes: $notes
@@ -506,13 +507,14 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
             "documentType": document_type,
             "notes": escaped_notes,
             "documentName": escaped_filename,
-            "document": None  # Will be replaced by map
+            "document": [None]  # Array with one element - will be replaced by map
         }
     }
     
-    # Map file to variable - use "f1" as the file key (as shown in community example)
+    # Map file to variable - use "f1" as the file key
+    # For arrays, use .0 to indicate first element: ["variables.document.0"]
     file_map_json = {
-        "f1": ["variables.document"]
+        "f1": ["variables.document.0"]
     }
     
     # Read file
