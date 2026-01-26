@@ -55,6 +55,9 @@ jobs:
         env:
           NOLOCO_API_TOKEN: ${{ secrets.NOLOCO_API_TOKEN }}
           NOLOCO_PROJECT_ID: ${{ secrets.NOLOCO_PROJECT_ID }}
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_RECIPIENTS: "j.rodriguez@stratumpr.com"
 
       - name: Upload sync logs
         if: always()
