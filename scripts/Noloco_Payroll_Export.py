@@ -481,38 +481,40 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
     escaped_filename = escape_json_string(filename)
     
     # Build operations JSON according to Noloco's format
-    # Based on the community example, the format is:
-    # Note: document field expects [Upload!] (array), not a single Upload
+    # Based on the community example: https://community.noloco.io/t/make-com-uploading-files-to-noloco-via-the-api-blueprint-example/462
+    # The document field expects [Upload!] (array type)
+    mutation_query = """mutation createDocuments($documentType: String!, $notes: String!, $documentName: String!, $document: [Upload!]) {
+        createDocuments(
+            documentType: $documentType
+            notes: $notes
+            documentName: $documentName
+            document: $document
+        ) {
+            id
+            document {
+                edges {
+                    node {
+                        id
+                        url
+                        name
+                    }
+                }
+            }
+        }
+    }"""
+    
     operations_json = {
-        "query": f"""mutation createDocuments($documentType: String!, $notes: String!, $documentName: String!, $document: [Upload!]) {{
-            createDocuments(
-                documentType: $documentType
-                notes: $notes
-                documentName: $documentName
-                document: $document
-            ) {{
-                id
-                document {{
-                    edges {{
-                        node {{
-                            id
-                            url
-                            name
-                        }}
-                    }}
-                }}
-            }}
-        }}""",
+        "query": mutation_query,
         "variables": {
             "documentType": document_type,
             "notes": escaped_notes,
             "documentName": escaped_filename,
-            "document": [None]  # Array with one element - will be replaced by map
+            "document": None  # Will be replaced by map
         }
     }
     
     # Map file to variable - use "f1" as the file key
-    # For arrays, use .0 to indicate first element: ["variables.document.0"]
+    # Even though variable is None, map to .0 since the field type is [Upload!] (array)
     file_map_json = {
         "f1": ["variables.document.0"]
     }
@@ -542,6 +544,11 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
     proxies = {"http": None, "https": None}
     
     try:
+        # Debug: print the operations JSON to verify format
+        operations_str = json.dumps(operations_json, indent=2)
+        print(f"  Debug - Operations JSON:\n{operations_str[:500]}...")
+        print(f"  Debug - File map: {json.dumps(file_map_json)}")
+        
         response = requests.post(
             api_url,
             headers=multipart_headers,
@@ -555,6 +562,8 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
             result = response.json()
             if "errors" in result:
                 error_msg = "; ".join([e.get("message", "Unknown error") for e in result["errors"]])
+                # Print full error details for debugging
+                print(f"  Debug - Full error response: {json.dumps(result, indent=2)}")
                 raise Exception(f"GraphQL error: {error_msg}")
             
             doc_id = result.get("data", {}).get("createDocuments", {}).get("id")
