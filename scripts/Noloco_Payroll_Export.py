@@ -544,11 +544,6 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
     proxies = {"http": None, "https": None}
     
     try:
-        # Debug: print the operations JSON to verify format
-        operations_str = json.dumps(operations_json, indent=2)
-        print(f"  Debug - Operations JSON:\n{operations_str[:500]}...")
-        print(f"  Debug - File map: {json.dumps(file_map_json)}")
-        
         response = requests.post(
             api_url,
             headers=multipart_headers,
@@ -562,8 +557,6 @@ def upload_to_noloco_documents(api_url, headers, file_path, period_formatted, pe
             result = response.json()
             if "errors" in result:
                 error_msg = "; ".join([e.get("message", "Unknown error") for e in result["errors"]])
-                # Print full error details for debugging
-                print(f"  Debug - Full error response: {json.dumps(result, indent=2)}")
                 raise Exception(f"GraphQL error: {error_msg}")
             
             doc_id = result.get("data", {}).get("createDocuments", {}).get("id")
