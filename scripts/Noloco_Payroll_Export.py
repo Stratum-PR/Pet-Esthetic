@@ -394,7 +394,23 @@ def run_export():
     api_url = f"https://api.portals.noloco.io/data/{PROJECT_ID}"
     headers = {"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application/json"}
 
-    period = _pay_period_for(date.today())
+    # Calculate period for today
+    today = date.today()
+    period = _pay_period_for(today)
+    period_start_date = datetime.strptime(period["start_date"], "%Y-%m-%d").date()
+    
+    # Special case: If today is the start date of a new period (i.e., the day after
+    # the previous period ended), use the previous period instead. This allows
+    # managers to validate timesheets on the day after a period ends.
+    if today == period_start_date:
+        # Calculate previous period by going back 14 days from the start
+        prev_period_start = period_start_date - timedelta(days=14)
+        prev_period_end = prev_period_start + timedelta(days=13)
+        period = {
+            "start_date": prev_period_start.strftime("%Y-%m-%d"),
+            "end_date": prev_period_end.strftime("%Y-%m-%d")
+        }
+    
     period_start = datetime.strptime(period["start_date"], "%Y-%m-%d").date()
     period_end = datetime.strptime(period["end_date"], "%Y-%m-%d").date()
 

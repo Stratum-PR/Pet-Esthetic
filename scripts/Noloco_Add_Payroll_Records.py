@@ -205,9 +205,28 @@ def calculate_biweekly_pay_period(target_date: date) -> Dict[str, str]:
     }
 
 def get_current_pay_period() -> Dict[str, str]:
-    """Get the current bi-weekly pay period for today."""
+    """
+    Get the current bi-weekly pay period for today.
+    
+    Special case: If today is the start date of a new period (i.e., the day after
+    the previous period ended), return the previous period instead. This allows
+    managers to validate timesheets on the day after a period ends.
+    """
     today = date.today()
-    return calculate_biweekly_pay_period(today)
+    period = calculate_biweekly_pay_period(today)
+    period_start = datetime.strptime(period['start_date'], '%Y-%m-%d').date()
+    
+    # If today is the start of a new period, use the previous period instead
+    if today == period_start:
+        # Calculate previous period by going back 14 days from the start
+        prev_period_start = period_start - timedelta(days=14)
+        prev_period_end = prev_period_start + timedelta(days=13)
+        return {
+            'start_date': prev_period_start.strftime('%Y-%m-%d'),
+            'end_date': prev_period_end.strftime('%Y-%m-%d')
+        }
+    
+    return period
 
 def calculate_payment_date(period_end_date: str) -> str:
     """
