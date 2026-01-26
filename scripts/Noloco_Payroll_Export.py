@@ -341,9 +341,9 @@ def _fetch_timesheets(api_url, headers):
     cursor = None
     while True:
         if cursor:
-            q = f'query {{ timesheetsCollection(first: 100, after: "{cursor}") {{ edges {{ node {{ id employeePin timesheetDate approved shiftHoursWorked clockDatetime clockOutDatetime }} }} pageInfo {{ hasNextPage endCursor }} }} }}'
+            q = f'query {{ timesheetsCollection(first: 100, after: "{cursor}") {{ edges {{ node {{ id employeePin employeeFullName timesheetDate approved shiftHoursWorked clockDatetime clockOutDatetime }} }} pageInfo {{ hasNextPage endCursor }} }} }}'
         else:
-            q = "query { timesheetsCollection(first: 100) { edges { node { id employeePin timesheetDate approved shiftHoursWorked clockDatetime clockOutDatetime } } pageInfo { hasNextPage endCursor } } }"
+            q = "query { timesheetsCollection(first: 100) { edges { node { id employeePin employeeFullName timesheetDate approved shiftHoursWorked clockDatetime clockOutDatetime } } pageInfo { hasNextPage endCursor } } }"
         data = _run_graphql(api_url, headers, q)
         coll = data.get("timesheetsCollection") or {}
         edges = coll.get("edges") or []
@@ -353,6 +353,7 @@ def _fetch_timesheets(api_url, headers):
             out.append({
                 "id": n.get("id"),
                 "employeePin": n.get("employeePin"),
+                "employeeFullName": n.get("employeeFullName"),
                 "timesheetDate": n.get("timesheetDate"),
                 "approved": n.get("approved"),
                 "shiftHoursWorked": n.get("shiftHoursWorked") or 0,
@@ -368,27 +369,26 @@ def _fetch_timesheets(api_url, headers):
 
 
 def _fetch_employees(api_url, headers):
-    """Returns dict keyed by normalized employeePin: { payRate, fullName }.
-    Uses employeeFullName from Noloco Employees table. Keyed by PIN since timesheets use PIN."""
+    """Returns dict keyed by normalized employeeIdVal: { payRate }.
+    Only fetches pay rates since employeeFullName comes from timesheets."""
     out = {}
     cursor = None
     while True:
         if cursor:
-            q = f'query {{ employeesCollection(first: 100, after: "{cursor}") {{ edges {{ node {{ employeePin payRate employeeFullName }} }} pageInfo {{ hasNextPage endCursor }} }} }}'
+            q = f'query {{ employeesCollection(first: 100, after: "{cursor}") {{ edges {{ node {{ employeeIdVal payRate }} }} pageInfo {{ hasNextPage endCursor }} }} }}'
         else:
-            q = "query { employeesCollection(first: 100) { edges { node { employeePin payRate employeeFullName } } pageInfo { hasNextPage endCursor } } }"
+            q = "query { employeesCollection(first: 100) { edges { node { employeeIdVal payRate } } pageInfo { hasNextPage endCursor } } }"
         data = _run_graphql(api_url, headers, q)
         coll = data.get("employeesCollection") or {}
         edges = coll.get("edges") or []
         pi = coll.get("pageInfo") or {}
         for e in edges:
             n = e.get("node") or {}
-            pin = n.get("employeePin")
-            if pin is not None:
-                key = str(pin).strip()
+            eid = n.get("employeeIdVal")
+            if eid is not None:
+                key = str(eid).strip()
                 out[key] = {
                     "payRate": n.get("payRate"),
-                    "fullName": n.get("employeeFullName") or "Unknown",
                 }
         if not pi.get("hasNextPage"):
             break
@@ -450,10 +450,11 @@ def run_export():
             continue
         key = str(pin).strip()
         emp = emp_map.get(key) or {}
-        # Use employeePin as employeeIdVal in all tables for consistency
+        # Use employeeFullName directly from timesheet (no matching needed)
+        employee_name = ts.get("employeeFullName") or "Unknown"
         time_entry_rows.append({
             "employeeIdVal": pin,
-            "employeeName": emp.get("fullName") or "Unknown",
+            "employeeName": employee_name,
             "date": _format_date(td),
             "clockIn": _format_time(ts.get("clockDatetime")),
             "clockOut": _format_time(ts.get("clockOutDatetime")),
@@ -464,7 +465,7 @@ def run_export():
         })
         rows.append({
             "employeeIdVal": pin,
-            "users_fullName": emp.get("fullName") or "Unknown",
+            "users_fullName": employee_name,
             "shiftHoursWorked": ts.get("shiftHoursWorked") or 0,
             "users_payRate": emp.get("payRate"),
         })
