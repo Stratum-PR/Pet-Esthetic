@@ -1104,8 +1104,17 @@ def main():
         print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         # Email reporting - only if there are issues AND it's 9 AM Puerto Rico time
-        has_issues = (len(orphaned_records_df) > 0 or len(flagged_hours_df) > 0 or
-                     len(failed_reasons) > 0 or len(missing_clock_out_df) > 0 or not validation_passed)
+        # NOTE:
+        # - Orphaned records (duplicates/invalid manual edits in Timesheets) are NO LONGER
+        #   considered "issues" for the purpose of sending the daily email.
+        # - We still include them in the email body when another issue exists, but they
+        #   alone will not trigger an email.
+        has_issues = (
+            len(missing_clock_out_df) > 0 or
+            len(flagged_hours_df) > 0 or
+            len(failed_reasons) > 0 or
+            not validation_passed
+        )
         
         # Check if current time is 9 AM in Puerto Rico (allows 9:00-9:59 AM window)
         now_pr = datetime.now(ZoneInfo('America/Puerto_Rico'))
