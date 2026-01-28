@@ -57,7 +57,7 @@ jobs:
           NOLOCO_PROJECT_ID: ${{ secrets.NOLOCO_PROJECT_ID }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          EMAIL_RECIPIENTS: "j.rodriguez@stratumpr.com"
+          EMAIL_RECIPIENTS: ["tech@stratumpr.com", "kristophermiguel@gmail.com"]
 
       - name: Upload sync logs
         if: always()
