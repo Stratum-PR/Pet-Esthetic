@@ -44,4 +44,4 @@ jobs:
       - name: install python packages
         run: |
           python -m pip install --upgrade pip
-          pi
+          pip
