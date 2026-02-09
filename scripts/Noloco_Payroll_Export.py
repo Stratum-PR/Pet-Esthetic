@@ -57,8 +57,12 @@ def _format_period(period):
 
 
 def _format_generated():
-    """Format current time as 'December 17, 2025 at 05:16 PM'."""
-    return datetime.now().strftime("%B %d, %Y at %I:%M %p")
+    """Format current time as 'December 17, 2025 at 05:16 PM' in Puerto Rico time (AST)."""
+    from datetime import timezone, timedelta
+    # Puerto Rico is AST (Atlantic Standard Time) = UTC-4
+    pr_tz = timezone(timedelta(hours=-4))
+    now_pr = datetime.now(pr_tz)
+    return now_pr.strftime("%B %d, %Y at %I:%M %p")
 
 
 _WHITE_FILL = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
