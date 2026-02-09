@@ -44,4 +44,22 @@ jobs:
       - name: install python packages
         run: |
           python -m pip install --upgrade pip
-          pip
+          pip install -r requirements.txt
+      - name: execute py script
+        run: |
+          python scripts/Noloco_Payroll_Export.py
+        env:
+          NOLOCO_API_TOKEN: ${{ secrets.NOLOCO_API_TOKEN }}
+          NOLOCO_PROJECT_ID: ${{ secrets.NOLOCO_PROJECT_ID }}
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_RECIPIENTS: "j.rodriguez@stratumpr.com"
+      - name: Upload sync logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-logs-${{ github.run_number }}
+          path: |
+            *.log
+            *.json
+          retention-days: 7
