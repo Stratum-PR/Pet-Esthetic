@@ -811,6 +811,22 @@ def update_payroll_record(
 # ============================================================================
 
 def process_payroll():
+    # TEMPORARY — paste at top of process_payroll(), remove after
+    introspect = """
+    query {
+      __type(name: "TestClockingAction") {
+        fields {
+          name
+        }
+      }
+    }
+    """
+    result = run_graphql_query(introspect)
+    fields = result.get("__type", {}).get("fields", [])
+    print("TestClockingAction fields:")
+    for f in fields:
+        print(f"  {f['name']}")
+    exit()
     """Main function to process clock records and create/update payroll records."""
     print("=" * 70)
     print("Pet Esthetic Payroll Processing")
