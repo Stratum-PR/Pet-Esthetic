@@ -241,7 +241,9 @@ def fetch_all_clock_records() -> List[Dict]:
                             clockOut
                             shiftHours
                             approved
-                            payrollRecordsId
+                            payrollRecords {{
+                                id
+                            }}
                         }}
                     }}
                     pageInfo {{
@@ -263,7 +265,9 @@ def fetch_all_clock_records() -> List[Dict]:
                             clockOut
                             shiftHours
                             approved
-                            payrollRecordsId
+                            payrollRecords {
+                                id
+                            }
                         }
                     }
                     pageInfo {
@@ -281,7 +285,8 @@ def fetch_all_clock_records() -> List[Dict]:
 
         for edge in edges:
             node = edge.get("node", {})
-            payroll_record_id = node.get("payrollRecordsId")
+            payroll_records = node.get("payrollRecords")
+            payroll_record_id = payroll_records.get("id") if payroll_records else None
             is_linked = payroll_record_id is not None
 
             # Derive timesheetDate equivalent from clockIn date portion
@@ -811,22 +816,6 @@ def update_payroll_record(
 # ============================================================================
 
 def process_payroll():
-    # TEMPORARY — paste at top of process_payroll(), remove after
-    introspect = """
-    query {
-      __type(name: "TestClockingAction") {
-        fields {
-          name
-        }
-      }
-    }
-    """
-    result = run_graphql_query(introspect)
-    fields = result.get("__type", {}).get("fields", [])
-    print("TestClockingAction fields:")
-    for f in fields:
-        print(f"  {f['name']}")
-    exit()
     """Main function to process clock records and create/update payroll records."""
     print("=" * 70)
     print("Pet Esthetic Payroll Processing")
