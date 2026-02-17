@@ -493,14 +493,15 @@ def filter_records_for_period(
     records: List[Dict],
     pay_period: Dict[str, str]
 ) -> List[Dict]:
-    """Filter clock records to approved, unlinked records within the pay period."""
+    """Filter clock records to unlinked records within the pay period."""
     period_start = datetime.strptime(pay_period['start_date'], '%Y-%m-%d').date()
     period_end = datetime.strptime(pay_period['end_date'], '%Y-%m-%d').date()
 
+    already_linked = sum(1 for r in records if r.get('is_linked'))
+    print(f"  Filter breakdown: {len(records)} total | {already_linked} already linked")
+
     filtered = []
     for rec in records:
-        if not is_approved(rec):
-            continue
         if rec.get('is_linked'):
             continue
 
@@ -629,8 +630,6 @@ def compute_correct_record_ids_for_payroll(
     for rid in related:
         rec = rec_by_id.get(rid)
         if not rec:
-            continue
-        if not is_approved(rec):
             continue
         td = (rec.get("timesheet_date") or "").split("T")[0]
         if not td:
@@ -836,8 +835,8 @@ def process_payroll():
     print(f"  Filtered to {len(period_records)} clock record(s) within pay period")
 
     if not period_records:
-        print("\nNo approved, unprocessed clock records for current pay period.")
-        print("  (Will still reconcile existing payrolls if manager cleared approved.)")
+        print("\nNo unprocessed clock records for current pay period.")
+        print("  (Will still reconcile existing payrolls.)")
 
     # Group by employee
     employee_groups = group_records_by_employee(period_records, current_pay_period)
@@ -922,14 +921,15 @@ def process_payroll():
     print(f"\nReconcile: {len(existing_in_period)} payroll(s) in current period")
     for p in existing_in_period:
         emp = normalize_employee_pin(p.get("employee_id"))
-        if emp in employee_groups:
-            continue
+        # Always reconcile all payrolls in the period — catches deleted clock records
+        # even for employees who also had new records processed this run
+        new_ids = [rec["id"] for rec in employee_groups.get(emp, {}).get("timesheets", []) if rec.get("id")]
         correct = compute_correct_record_ids_for_payroll(
-            p, all_clock_records, current_pay_period, new_record_ids=[]
+            p, all_clock_records, current_pay_period, new_record_ids=new_ids
         )
         if set(correct) != set(p.get("related_timesheet_ids", [])):
             print(f"\n{'=' * 70}")
-            print(f"Reconcile (employee {emp}, payroll {p.get('id')}): unlinking non-approved records")
+            print(f"Reconcile (employee {emp}, payroll {p.get('id')}): updating linked records")
             print(f"{'=' * 70}")
             try:
                 update_payroll_record(p, correct)
