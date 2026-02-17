@@ -422,6 +422,69 @@ def _fetch_employees(api_url, headers):
     return out
 
 
+def _upload_to_noloco(api_url: str, headers: dict, file_path: str, period: dict) -> bool:
+    """
+    Upload the Excel file to Noloco's file storage and create a record in the
+    documents table.  Noloco accepts multipart uploads via the REST endpoint:
+        POST https://api.portals.noloco.io/files/{PROJECT_ID}
+    The returned file URL is then written to the documents table via GraphQL.
+    """
+    upload_url = f"https://api.portals.noloco.io/files/{PROJECT_ID}"
+    filename = os.path.basename(file_path)
+
+    # Step 1 — upload the binary file
+    try:
+        with open(file_path, "rb") as f:
+            upload_headers = {"Authorization": f"Bearer {API_TOKEN}"}
+            resp = requests.post(
+                upload_url,
+                headers=upload_headers,
+                files={"file": (filename, f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                timeout=60,
+            )
+        if resp.status_code not in (200, 201):
+            print(f"  ⚠️  File upload failed: HTTP {resp.status_code} — {resp.text[:200]}")
+            return False
+
+        upload_data = resp.json()
+        file_url = upload_data.get("url") or upload_data.get("Location") or upload_data.get("location")
+        if not file_url:
+            print(f"  ⚠️  Upload succeeded but no URL in response: {upload_data}")
+            return False
+
+        print(f"  ✓ File uploaded: {file_url}")
+
+    except Exception as e:
+        print(f"  ⚠️  Upload request failed: {e}")
+        return False
+
+    # Step 2 — create a record in the documents table linking to the file
+    period_label = f"{period['start_date']} to {period['end_date']}"
+    mutation = f"""
+    mutation {{
+      createDocument(
+        name: "{filename}",
+        periodLabel: "{period_label}",
+        file: {{ url: "{file_url}", filename: "{filename}" }}
+      ) {{
+        id
+      }}
+    }}
+    """
+    try:
+        result = _run_graphql(api_url, headers, mutation)
+        doc_id = (result.get("createDocument") or {}).get("id")
+        if doc_id:
+            print(f"  ✓ Noloco document record created: ID {doc_id}")
+            return True
+        else:
+            print(f"  ⚠️  Document mutation returned no ID: {result}")
+            return False
+    except Exception as e:
+        print(f"  ⚠️  Document record creation failed: {e}")
+        return False
+
+
 def run_export():
     api_url = f"https://api.portals.noloco.io/data/{PROJECT_ID}"
     headers = {"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application/json"}
@@ -534,6 +597,17 @@ def run_export():
     out_path = f"Payroll_Export_{period['start_date']}_to_{period['end_date']}.xlsx"
     wb.save(out_path)
     print(f"Saved: {out_path}")
+
+    # Upload to Noloco documents table
+    try:
+        print("\nUploading to Noloco documents...")
+        noloco_url = f"https://api.portals.noloco.io/data/{PROJECT_ID}"
+        noloco_headers = {"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application/json"}
+        uploaded = _upload_to_noloco(noloco_url, noloco_headers, out_path, period)
+        if not uploaded:
+            print("  Upload skipped or failed — file still saved locally and will be emailed.")
+    except Exception as e:
+        print(f"  Warning: Noloco upload error: {e}")
 
     # Send email — unchanged from original
     try:
