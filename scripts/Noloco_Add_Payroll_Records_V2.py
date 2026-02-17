@@ -241,9 +241,7 @@ def fetch_all_clock_records() -> List[Dict]:
                             clockOut
                             shiftHours
                             approved
-                            payrollRecord {{
-                                id
-                            }}
+                            payrollRecordId
                         }}
                     }}
                     pageInfo {{
@@ -265,9 +263,7 @@ def fetch_all_clock_records() -> List[Dict]:
                             clockOut
                             shiftHours
                             approved
-                            payrollRecord {
-                                id
-                            }
+                            payrollRecordId
                         }
                     }
                     pageInfo {
@@ -285,9 +281,8 @@ def fetch_all_clock_records() -> List[Dict]:
 
         for edge in edges:
             node = edge.get("node", {})
-            payroll_record = node.get("payrollRecord")
-            is_linked = payroll_record is not None and payroll_record.get("id") is not None
-            payroll_record_id = payroll_record.get("id") if payroll_record else None
+            payroll_record_id = node.get("payrollRecordId")
+            is_linked = payroll_record_id is not None
 
             # Derive timesheetDate equivalent from clockIn date portion
             clock_in_str = node.get("clockIn", "")
