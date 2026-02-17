@@ -453,14 +453,12 @@ def run_export():
     print("Fetching employees...")
     emp_map = _fetch_employees(api_url, headers)
 
-    # Filter: in period and approved
+    # Filter: in period
     # Internal field names (timesheetDate, shiftHoursWorked, clockDatetime, clockOutDatetime)
     # are already normalized in _fetch_clock_records, so no changes needed below this line.
     time_entry_rows = []
     rows = []
     for rec in all_records:
-        if not _is_approved(rec):
-            continue
         td = (rec.get("timesheetDate") or "").split("T")[0]
         if not td:
             continue
