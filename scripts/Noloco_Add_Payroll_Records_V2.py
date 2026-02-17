@@ -241,7 +241,7 @@ def fetch_all_clock_records() -> List[Dict]:
                             clockOut
                             shiftHours
                             approved
-                            payrollRecordId
+                            payrollRecordsId
                         }}
                     }}
                     pageInfo {{
@@ -263,7 +263,7 @@ def fetch_all_clock_records() -> List[Dict]:
                             clockOut
                             shiftHours
                             approved
-                            payrollRecordId
+                            payrollRecordsId
                         }
                     }
                     pageInfo {
@@ -281,7 +281,7 @@ def fetch_all_clock_records() -> List[Dict]:
 
         for edge in edges:
             node = edge.get("node", {})
-            payroll_record_id = node.get("payrollRecordId")
+            payroll_record_id = node.get("payrollRecordsId")
             is_linked = payroll_record_id is not None
 
             # Derive timesheetDate equivalent from clockIn date portion
@@ -740,7 +740,7 @@ def unlink_clock_record_from_payroll(record_id: str) -> None:
     """
     mutation = f"""
     mutation {{
-        updateTestClockingAction(id: "{record_id}", payrollRecordId: null) {{
+        updateTestClockingAction(id: "{record_id}", payrollRecordsId: null) {{
             id
         }}
     }}
