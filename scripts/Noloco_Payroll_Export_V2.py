@@ -55,12 +55,22 @@ def _format_date(d):
 
 
 def _format_time(iso_str):
-    """Format ISO datetime string as 12h time (e.g. 05:00 PM)."""
+    """Format ISO datetime string as 12h time (e.g. 05:00 PM) in Puerto Rico time (AST, UTC-4)."""
     if not iso_str:
         return ""
     try:
+        from datetime import timezone, timedelta
         s = str(iso_str).replace("Z", "+00:00").split(".")[0]
+        # Re-add UTC offset if stripped by split
+        if "+" not in s and len(str(iso_str).split(".")[0]) != len(s):
+            s += "+00:00"
         dt = datetime.fromisoformat(s)
+        # If datetime is naive, assume UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        # Convert to AST (UTC-4)
+        ast_tz = timezone(timedelta(hours=-4))
+        dt = dt.astimezone(ast_tz)
         return dt.strftime("%I:%M %p")
     except Exception:
         return ""
