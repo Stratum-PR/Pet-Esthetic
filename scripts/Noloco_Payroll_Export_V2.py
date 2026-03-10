@@ -489,7 +489,8 @@ def run_export():
     api_url = f"https://api.portals.noloco.io/data/{PROJECT_ID}"
     headers = {"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application/json"}
 
-    today = date.today()
+    #today = date.today()
+    today = date(2026, 3, 9)  # Last Monday — override instead of date.today()
     period = _pay_period_for(today)
     period_start_date = datetime.strptime(period["start_date"], "%Y-%m-%d").date()
 
