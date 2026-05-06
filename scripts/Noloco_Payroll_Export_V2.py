@@ -500,7 +500,7 @@ def run_export():
     headers = {"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application/json"}
 
     today = date.today()
-    today = date(2026, 4, 20)  # Last Monday — override instead of date.today()
+    today = date(2026, 5, 4)  # Last Monday — override instead of date.today()
     period = _pay_period_for(today)
     period_start_date = datetime.strptime(period["start_date"], "%Y-%m-%d").date()
 
